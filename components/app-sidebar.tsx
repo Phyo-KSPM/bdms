@@ -14,7 +14,7 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 import { readAuthSession } from "@/lib/auth"
-import { GalleryVerticalEndIcon, AudioLinesIcon, TerminalIcon, TerminalSquareIcon, BotIcon, BookOpenIcon, Settings2Icon, FrameIcon, PieChartIcon, MapIcon } from "lucide-react"
+import { AudioLinesIcon, TerminalIcon, LayoutDashboardIcon, TerminalSquareIcon, BotIcon, BookOpenIcon, Settings2Icon, FrameIcon, PieChartIcon, MapIcon } from "lucide-react"
 
 // This is sample data.
 const data = {
@@ -25,10 +25,9 @@ const data = {
   },
   teams: [
     {
-      name: "Acme Inc",
+      name: "BDMS Inc",
       logo: (
-        <GalleryVerticalEndIcon
-        />
+        <img src="/logo.png" alt="BDMS logo" className="size-4 rounded-sm object-contain" />
       ),
       plan: "Enterprise",
     },
@@ -51,13 +50,28 @@ const data = {
   ],
   navMain: [
     {
+      title: "Dashboard",
+      url: "/dashboard",
+      icon: (
+        <LayoutDashboardIcon
+        />
+      ),
+      isActive: true,
+      items: [
+        {
+          title: "Overview",
+          url: "/dashboard",
+        },
+      ],
+    },
+    {
       title: "Playground",
       url: "#",
       icon: (
         <TerminalSquareIcon
         />
       ),
-      isActive: true,
+      isActive: false,
       items: [
         {
           title: "History",
