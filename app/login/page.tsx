@@ -101,6 +101,7 @@ export default function LoginPage() {
           alt="Blood donation center"
           className="absolute inset-0 h-full w-full object-cover object-center"
         />
+        <div className="absolute inset-0 bg-transparent transition-colors dark:bg-black/35" />
         <motion.div
           className="absolute right-6 bottom-6 left-6 max-w-lg text-white sm:right-8 sm:bottom-8 sm:left-8 lg:right-10 lg:bottom-10 lg:left-10"
           initial={{ opacity: 0, y: 12 }}
