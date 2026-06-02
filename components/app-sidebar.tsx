@@ -3,9 +3,9 @@
 import * as React from "react"
 
 import { NavMain } from "@/components/nav-main"
-import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
+import { useLocale } from "@/components/i18n/locale-provider"
 import {
   Sidebar,
   SidebarContent,
@@ -14,7 +14,16 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 import { readAuthSession } from "@/lib/auth"
-import { AudioLinesIcon, TerminalIcon, LayoutDashboardIcon, TerminalSquareIcon, BotIcon, BookOpenIcon, Settings2Icon, FrameIcon, PieChartIcon, MapIcon } from "lucide-react"
+import {
+  BellIcon,
+  Building2Icon,
+  FlaskConicalIcon,
+  LayoutDashboardIcon,
+  PackageIcon,
+  ShieldCheckIcon,
+  BarChart3Icon,
+  HeartHandshakeIcon,
+} from "lucide-react"
 
 // This is sample data.
 const data = {
@@ -30,22 +39,6 @@ const data = {
         <img src="/logo.png" alt="BDMS logo" className="size-4 rounded-sm object-contain" />
       ),
       plan: "Enterprise",
-    },
-    {
-      name: "Acme Corp.",
-      logo: (
-        <AudioLinesIcon
-        />
-      ),
-      plan: "Startup",
-    },
-    {
-      name: "Evil Corp.",
-      logo: (
-        <TerminalIcon
-        />
-      ),
-      plan: "Free",
     },
   ],
   navMain: [
@@ -65,133 +58,120 @@ const data = {
       ],
     },
     {
-      title: "Playground",
-      url: "#",
-      icon: (
-        <TerminalSquareIcon
-        />
-      ),
-      isActive: false,
+      title: "Donor",
+      url: "/donor",
+      icon: <HeartHandshakeIcon />,
       items: [
         {
-          title: "History",
-          url: "#",
+          title: "Donor Registration",
+          url: "/donor/registration",
         },
         {
-          title: "Starred",
-          url: "#",
+          title: "Donation Records",
+          url: "/donor/donations",
         },
         {
-          title: "Settings",
-          url: "#",
+          title: "56-day Eligibility",
+          url: "/donor/eligibility",
+        },
+        {
+          title: "Donor History",
+          url: "/donor/history",
+        },
+        {
+          title: "Donor Card / Certificate",
+          url: "/donor/certificate",
         },
       ],
     },
     {
-      title: "Models",
-      url: "#",
-      icon: (
-        <BotIcon
-        />
-      ),
-      items: [
-        {
-          title: "Genesis",
-          url: "#",
-        },
-        {
-          title: "Explorer",
-          url: "#",
-        },
-        {
-          title: "Quantum",
-          url: "#",
-        },
-      ],
+      title: "Inventory",
+      url: "/inventory",
+      icon: <PackageIcon />,
     },
     {
-      title: "Documentation",
-      url: "#",
-      icon: (
-        <BookOpenIcon
-        />
-      ),
-      items: [
-        {
-          title: "Introduction",
-          url: "#",
-        },
-        {
-          title: "Get Started",
-          url: "#",
-        },
-        {
-          title: "Tutorials",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
-        },
-      ],
+      title: "Testing & Screening",
+      url: "/testing-screening",
+      icon: <FlaskConicalIcon />,
     },
     {
-      title: "Settings",
-      url: "#",
-      icon: (
-        <Settings2Icon
-        />
-      ),
-      items: [
-        {
-          title: "General",
-          url: "#",
-        },
-        {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Billing",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
-        },
-      ],
-    },
-  ],
-  projects: [
-    {
-      name: "Design Engineering",
-      url: "#",
-      icon: (
-        <FrameIcon
-        />
-      ),
+      title: "Hospital Recipient",
+      url: "/hospital-recipient",
+      icon: <Building2Icon />,
     },
     {
-      name: "Sales & Marketing",
-      url: "#",
-      icon: (
-        <PieChartIcon
-        />
-      ),
+      title: "Notification & Communication",
+      url: "/notifications",
+      icon: <BellIcon />,
     },
     {
-      name: "Travel",
-      url: "#",
-      icon: (
-        <MapIcon
-        />
-      ),
+      title: "Report & Analytics",
+      url: "/reports",
+      icon: <BarChart3Icon />,
+    },
+    {
+      title: "User Management & Security",
+      url: "/user-management",
+      icon: <ShieldCheckIcon />,
     },
   ],
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const session = readAuthSession()
+  const { locale } = useLocale()
+
+  const navMain = React.useMemo(() => {
+    if (locale === "en") return data.navMain
+
+    const topMap: Record<string, string> = {
+      Dashboard: "Dashboard",
+      Donor: "Donor",
+      Inventory: "သွေးဘဏ် စတော့/သိုလှောင်မှု",
+      "Testing & Screening": "စစ်ဆေးမှု နှင့် စကရင်းနင်း",
+      "Hospital Recipient": "ဆေးရုံ လက်ခံသူ",
+      "Notification & Communication": "အသိပေးချက် နှင့် ဆက်သွယ်ရေး",
+      "Report & Analytics": "အစီရင်ခံစာ နှင့် သုံးသပ်ချက်",
+      "User Management & Security": "အသုံးပြုသူ စီမံခန့်ခွဲမှု နှင့် လုံခြုံရေး",
+    }
+
+    const donorSubMap: Record<string, string> = {
+      "Donor Registration": "Donor မှတ်ပုံတင်ခြင်း",
+      "Donation Records": "လှူဒါန်းမှတ်တမ်း",
+      "56-day Eligibility": "56 ရက် cooldown အသိပေးချက်",
+      "Donor History": "Donor သမိုင်းကြောင်း",
+      "Donor Card / Certificate": "Donor Card / Certificate",
+    }
+
+    const dashboardSubMap: Record<string, string> = {
+      Overview: "Overview",
+    }
+
+    return data.navMain.map((item) => {
+      if (item.title === "Dashboard") {
+        return {
+          ...item,
+          title: topMap[item.title] ?? item.title,
+          items: item.items?.map((sub) => ({
+            ...sub,
+            title: dashboardSubMap[sub.title] ?? sub.title,
+          })),
+        }
+      }
+      if (item.title === "Donor") {
+        return {
+          ...item,
+          title: topMap[item.title] ?? item.title,
+          items: item.items?.map((sub) => ({
+            ...sub,
+            title: donorSubMap[sub.title] ?? sub.title,
+          })),
+        }
+      }
+
+      return topMap[item.title] ? { ...item, title: topMap[item.title]! } : item
+    })
+  }, [locale])
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -199,8 +179,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <TeamSwitcher teams={data.teams} />
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
-        <NavProjects projects={data.projects} />
+        <NavMain items={navMain} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser

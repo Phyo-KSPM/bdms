@@ -1,5 +1,7 @@
 "use client"
 
+import { useLocale } from "@/components/i18n/locale-provider"
+import { useRouter } from "next/navigation"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,13 +30,27 @@ export function NavProjects({
   }[]
 }) {
   const { isMobile } = useSidebar()
+  const { locale } = useLocale()
+  const router = useRouter()
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel>Projects</SidebarGroupLabel>
+      <SidebarGroupLabel>
+        {locale === "en" ? "Projects" : "ပရောဂျက်များ"}
+      </SidebarGroupLabel>
       <SidebarMenu>
         {projects.map((item) => (
           <SidebarMenuItem key={item.name}>
-            <SidebarMenuButton render={<a href={item.url} />}>
+            <SidebarMenuButton
+              render={
+                <a
+                  href={item.url}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    router.push(item.url)
+                  }}
+                />
+              }
+            >
               {item.icon}
               <span>{item.name}</span>
             </SidebarMenuButton>
@@ -59,18 +75,18 @@ export function NavProjects({
                 <DropdownMenuItem>
                   <FolderIcon
                   />
-                  <span>View Project</span>
+                  <span>{locale === "en" ? "View Project" : "ကြည့်မယ်"}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem>
                   <ArrowRightIcon
                   />
-                  <span>Share Project</span>
+                  <span>{locale === "en" ? "Share Project" : "မျှဝေမယ်"}</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive">
                   <Trash2Icon
                   />
-                  <span>Delete Project</span>
+                  <span>{locale === "en" ? "Delete Project" : "ဖျက်မယ်"}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -79,7 +95,7 @@ export function NavProjects({
         <SidebarMenuItem>
           <SidebarMenuButton className="text-sidebar-foreground/70">
             <MoreHorizontalIcon className="text-sidebar-foreground/70" />
-            <span>More</span>
+            <span>{locale === "en" ? "More" : "ထပ်မံ"}</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
