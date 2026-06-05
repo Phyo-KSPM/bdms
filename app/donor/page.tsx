@@ -11,8 +11,13 @@ const items = [
     href: "/donor/registration",
   },
   {
+    title: "စစ်ဆေးမှု နှင့် စကရင်းနင်း",
+    description: "သွေးမကောက်မီ vitals နှင့် TTI စစ်ဆေးပြီး Pass ဖြစ်မှသာ လှူဒါန်းခွင့်ပြုပါ။",
+    href: "/testing-screening",
+  },
+  {
     title: "လှူဒါန်းမှတ်တမ်း",
-    description: "Donor အလိုက် လှူဒါန်းရက်စွဲ၊ note စသည်များကို သိမ်းဆည်းပါ။",
+    description: "စစ်ဆေးမှု Pass ဖြစ်ပြီးမှ သွေးအိတ်ထဲ ကောက်ယူမှု မှတ်တမ်းတင်ပါ။",
     href: "/donor/donations",
   },
   {

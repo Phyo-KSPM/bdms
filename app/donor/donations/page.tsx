@@ -3,6 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { format } from "date-fns"
 import { AuthedShell } from "@/components/authed-shell"
 import { useLocale } from "@/components/i18n/locale-provider"
@@ -17,11 +18,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { toast } from "sonner"
 import {
   addDonationRecord,
-  BloodBagStatusSchema,
   DonationTypeSchema,
+  ensureScreeningVisit,
   getNextDonationIdPreview,
+  getPassedScreeningForDonor,
   canDonateNow,
   deleteDonationRecord,
   getLastDonation,
@@ -29,7 +32,6 @@ import {
   listDonors,
   type DonationRecord,
   type Donor,
-  type TtiScreening,
 } from "@/lib/donor-store"
 
 function toDateTimeLocalValue(date: Date) {
@@ -51,19 +53,8 @@ export default function Page() {
   const [donationType, setDonationType] = useState<string>("whole_blood")
   const [volumeMl, setVolumeMl] = useState<string>("450")
   const [location, setLocation] = useState<string>("")
-  const [bpS, setBpS] = useState<string>("")
-  const [bpD, setBpD] = useState<string>("")
-  const [hb, setHb] = useState<string>("")
-  const [weightKg, setWeightKg] = useState<string>("")
-  const [bloodBagStatus, setBloodBagStatus] = useState<string>("pending_testing")
-  const [tti, setTti] = useState<TtiScreening>({
-    hiv: "pending",
-    hepB: "pending",
-    hepC: "pending",
-    syphilis: "pending",
-  })
-  const [receivedBy, setReceivedBy] = useState<string>("")
   const [collectedBy, setCollectedBy] = useState<string>("")
+  const [screeningTick, setScreeningTick] = useState(0)
   const [adverseReactions, setAdverseReactions] = useState<string>("")
   const [note, setNote] = useState("")
   const [records, setRecords] = useState<DonationRecord[]>([])
@@ -85,17 +76,10 @@ export default function Page() {
         donationType: "Donation type",
         volumeMl: "Volume (ml)",
         location: "Location / Camp",
-        bloodBagStatus: "Blood bag status",
         adverseReactions: "Adverse reactions",
-        bpSys: "BP (sys)",
-        bpDia: "BP (dia)",
-        hb: "Hb",
-        weightKg: "Weight (kg)",
-        receivedBy: "Received by",
         collectedBy: "Collected by",
-        tti: "TTI screening results",
         note: "Note (optional)",
-        save: "Save donation record",
+        save: "Record blood collection",
         refresh: "Refresh",
         selectDonorHint: "Search and select a donor by Donor ID.",
         noRecords: "No records yet.",
@@ -103,6 +87,13 @@ export default function Page() {
         statusCooldown: "Cooldown (56 days)",
         lastDonation: "Last donation",
         nextEligible: "Next eligible",
+        screeningPassed: "Pre-donation screening passed",
+        screeningRequired:
+          "Complete pre-donation screening before collecting blood.",
+        goScreening: "Go to screening",
+        workflowHint:
+          "Workflow: Register → Screen (pass) → Collect blood into bag",
+        viewInventory: "View all blood bags",
       } as const
     }
     return {
@@ -120,17 +111,10 @@ export default function Page() {
       donationType: "လှူဒါန်းမှု အမျိုးအစား",
       volumeMl: "ပမာဏ (ml)",
       location: "နေရာ / စခန်း",
-      bloodBagStatus: "သွေးအိတ် အခြေအနေ",
       adverseReactions: "ဘေးထွက်ဆိုးကျိုး",
-      bpSys: "သွေးပေါင် (အပေါ်)",
-      bpDia: "သွေးပေါင် (အောက်)",
-      hb: "သွေးအား (Hb)",
-      weightKg: "အလေးချိန် (kg)",
-      receivedBy: "လက်ခံသူ",
       collectedBy: "ဖောက်ယူသူ",
-      tti: "TTI စစ်ဆေးချက်",
       note: "မှတ်ချက် (optional)",
-      save: "သိမ်းမယ်",
+      save: "သွေးအိတ် ကောက်ယူမှု မှတ်တမ်းတင်",
       refresh: "Refresh",
       selectDonorHint: "",
       noRecords: "မှတ်တမ်း မရှိသေးပါ။",
@@ -138,6 +122,13 @@ export default function Page() {
       statusCooldown: "Cooldown (56 days)",
       lastDonation: "နောက်ဆုံးလှူခဲ့သည့်ရက်",
       nextEligible: "နောက်တစ်ကြိမ် လှူနိုင်မည့်ရက်",
+      screeningPassed: "လှူဒါန်းမီ စစ်ဆေးမှု Pass ဖြစ်ပြီ",
+      screeningRequired:
+        "သွေးမကောက်မီ စစ်ဆေးမှု ပြီးမြောက်ရန် လိုအပ်ပါသည်။",
+      goScreening: "စစ်ဆေးရန် သွားမည်",
+      workflowHint:
+        "အဆင့်များ: မှတ်ပုံတင် → စစ်ဆေး (Pass) → သွေးအိတ်ထဲ ကောက်ယူ",
+      viewInventory: "သွေးအိတ် စတော့ ကြည့်ရန်",
     } as const
   }, [locale])
 
@@ -155,26 +146,6 @@ export default function Page() {
           plasma: "ပလားစမာ",
           double_red_cells: "RBC နှစ်ဆ",
         }
-  }, [locale])
-
-  const bloodBagStatusLabel = useMemo(() => {
-    return locale === "en"
-      ? {
-          pending_testing: "Pending testing",
-          ready_to_use: "Ready to use",
-          discarded: "Discarded",
-        }
-      : {
-          pending_testing: "စစ်ဆေးရန် စောင့်ဆိုင်း",
-          ready_to_use: "အသုံးပြုရန် အဆင်သင့်",
-          discarded: "ဖျက်သိမ်း",
-        }
-  }, [locale])
-
-  const ttiResultLabel = useMemo(() => {
-    return locale === "en"
-      ? { pending: "Pending", negative: "Negative", positive: "Positive" }
-      : { pending: "စောင့်ဆိုင်း", negative: "Negative", positive: "Positive" }
   }, [locale])
 
   function refreshDonors() {
@@ -245,14 +216,36 @@ export default function Page() {
     return canDonateNow(selectedDonorId)
   }, [selectedDonorId, records])
 
+  const passedScreening = useMemo(() => {
+    void screeningTick
+    if (!selectedDonorId) return null
+    return getPassedScreeningForDonor(selectedDonorId)
+  }, [selectedDonorId, screeningTick])
+
+  const canCollectBlood =
+    !!selectedDonorId && eligibleNow && passedScreening != null
+
+  useEffect(() => {
+    if (!selectedDonorId) return
+    ensureScreeningVisit(selectedDonorId)
+    setScreeningTick((n) => n + 1)
+  }, [selectedDonorId])
+
   return (
     <AuthedShell title={t.title}>
+      <div className="mb-4 flex justify-end">
+        <Link href="/inventory">
+          <Button variant="outline">{t.viewInventory}</Button>
+        </Link>
+      </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">{t.addTitle}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">{t.workflowHint}</p>
+
             <div className="grid gap-3">
               <Label>{t.donorId}</Label>
               <Input
@@ -315,6 +308,20 @@ export default function Page() {
                     {eligibleNow ? t.statusEligible : t.statusCooldown}
                   </span>
                 </div>
+                <div className="mt-2">
+                  {passedScreening ? (
+                    <span className="text-emerald-600">{t.screeningPassed}</span>
+                  ) : (
+                    <div className="space-y-2">
+                      <span className="text-amber-600">{t.screeningRequired}</span>
+                      <Link href="/testing-screening">
+                        <Button size="sm" variant="outline">
+                          {t.goScreening}
+                        </Button>
+                      </Link>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : null}
 
@@ -374,19 +381,8 @@ export default function Page() {
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-3">
-                <Label>{t.bloodBagStatus}</Label>
-                <Select value={bloodBagStatus} onValueChange={(v) => setBloodBagStatus(v ?? "")}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {BloodBagStatusSchema.options.map((k) => (
-                      <SelectItem key={k} value={k}>
-                        {bloodBagStatusLabel[k] ?? k}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>{t.collectedBy}</Label>
+                <Input value={collectedBy} onChange={(e) => setCollectedBy(e.target.value)} />
               </div>
               <div className="grid gap-3">
                 <Label>{t.adverseReactions}</Label>
@@ -398,96 +394,37 @@ export default function Page() {
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-4">
-              <div className="grid gap-3">
-                <Label>{t.bpSys}</Label>
-                <Input type="number" value={bpS} onChange={(e) => setBpS(e.target.value)} />
-              </div>
-              <div className="grid gap-3">
-                <Label>{t.bpDia}</Label>
-                <Input type="number" value={bpD} onChange={(e) => setBpD(e.target.value)} />
-              </div>
-              <div className="grid gap-3">
-                <Label>{t.hb}</Label>
-                <Input type="number" value={hb} onChange={(e) => setHb(e.target.value)} />
-              </div>
-              <div className="grid gap-3">
-                <Label>{t.weightKg}</Label>
-                <Input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="grid gap-3">
-                <Label>{t.receivedBy}</Label>
-                <Input value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} />
-              </div>
-              <div className="grid gap-3">
-                <Label>{t.collectedBy}</Label>
-                <Input value={collectedBy} onChange={(e) => setCollectedBy(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              <Label>{t.tti}</Label>
-              <div className="grid gap-3 sm:grid-cols-4">
-                {(["hiv", "hepB", "hepC", "syphilis"] as const).map((k) => (
-                  <div key={k} className="grid gap-3">
-                    <Label className="text-xs uppercase text-muted-foreground">{k}</Label>
-                    <Select
-                      value={tti[k]}
-                      onValueChange={(v) =>
-                        setTti((prev) => ({ ...prev, [k]: (v as any) ?? "pending" }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(["pending", "negative", "positive"] as const).map((opt) => (
-                          <SelectItem key={opt} value={opt}>
-                            {ttiResultLabel[opt] ?? opt}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ))}
-              </div>
-            </div>
-
             <div className="grid gap-3">
               <Label>{t.note}</Label>
               <Input value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
 
             <Button
-              disabled={!selectedDonorId || donors.length === 0}
+              disabled={!canCollectBlood || donors.length === 0}
               onClick={() => {
-                if (!selectedDonorId) return
-                addDonationRecord({
-                  donorId: selectedDonorId,
-                  donatedAt: new Date(donatedAt),
-                  donationId: donationId.trim() ? donationId.trim() : undefined,
-                  donationType: (donationType as any) ?? null,
-                  volumeMl: volumeMl ? Number(volumeMl) : null,
-                  location: location.trim(),
-                  vitals: {
-                    bpSystolic: bpS ? Number(bpS) : null,
-                    bpDiastolic: bpD ? Number(bpD) : null,
-                    hb: hb ? Number(hb) : null,
-                    weightKg: weightKg ? Number(weightKg) : null,
-                  },
-                  bloodBagStatus: (bloodBagStatus as any) ?? "pending_testing",
-                  tti,
-                  receivedBy: receivedBy.trim(),
-                  collectedBy: collectedBy.trim(),
-                  adverseReactions: adverseReactions.trim(),
-                  note: note.trim() ? note.trim() : undefined,
-                })
-                setNote("")
-                setDonationId(getNextDonationIdPreview())
-                refreshRecords(selectedDonorId)
+                if (!selectedDonorId || !passedScreening) return
+                try {
+                  addDonationRecord({
+                    donorId: selectedDonorId,
+                    donatedAt: new Date(donatedAt),
+                    donationId: donationId.trim() ? donationId.trim() : undefined,
+                    donationType: (donationType as any) ?? null,
+                    volumeMl: volumeMl ? Number(volumeMl) : null,
+                    location: location.trim(),
+                    collectedBy: collectedBy.trim(),
+                    adverseReactions: adverseReactions.trim(),
+                    note: note.trim() ? note.trim() : undefined,
+                    screeningVisitId: passedScreening.id,
+                  })
+                  setNote("")
+                  setDonationId(getNextDonationIdPreview())
+                  setScreeningTick((n) => n + 1)
+                  refreshRecords(selectedDonorId)
+                } catch (err) {
+                  if (err instanceof Error && err.message === "SCREENING_REQUIRED") {
+                    toast.error(t.screeningRequired)
+                  }
+                }
               }}
             >
               {t.save}

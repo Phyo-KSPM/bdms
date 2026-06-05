@@ -13,11 +13,11 @@ import {
   SidebarHeader,
   SidebarRail,
 } from "@/components/ui/sidebar"
-import { readAuthSession } from "@/lib/auth"
+import { hasPermission, readAuthSession, type AuthSession } from "@/lib/auth"
+import { getUserById, type Permission } from "@/lib/user-store"
 import {
   BellIcon,
   Building2Icon,
-  FlaskConicalIcon,
   LayoutDashboardIcon,
   PackageIcon,
   ShieldCheckIcon,
@@ -25,11 +25,10 @@ import {
   HeartHandshakeIcon,
 } from "lucide-react"
 
-// This is sample data.
 const data = {
   user: {
-    name: "shadcn",
-    email: "m@example.com",
+    name: "BDMS User",
+    email: "user@bdms.local",
     avatar: "/avatars/shadcn.jpg",
   },
   teams: [
@@ -45,15 +44,14 @@ const data = {
     {
       title: "Dashboard",
       url: "/dashboard",
-      icon: (
-        <LayoutDashboardIcon
-        />
-      ),
+      icon: <LayoutDashboardIcon />,
       isActive: true,
+      permission: "dashboard.read" as Permission,
       items: [
         {
           title: "Overview",
           url: "/dashboard",
+          permission: "dashboard.read" as Permission,
         },
       ],
     },
@@ -61,26 +59,37 @@ const data = {
       title: "Donor",
       url: "/donor",
       icon: <HeartHandshakeIcon />,
+      permission: "donors.read" as Permission,
       items: [
         {
           title: "Donor Registration",
           url: "/donor/registration",
+          permission: "donors.write" as Permission,
+        },
+        {
+          title: "Testing & Screening",
+          url: "/testing-screening",
+          permission: "screening.read" as Permission,
         },
         {
           title: "Donation Records",
           url: "/donor/donations",
+          permission: "donations.read" as Permission,
         },
         {
           title: "56-day Eligibility",
           url: "/donor/eligibility",
+          permission: "donors.read" as Permission,
         },
         {
           title: "Donor History",
           url: "/donor/history",
+          permission: "donors.read" as Permission,
         },
         {
           title: "Donor Card / Certificate",
           url: "/donor/certificate",
+          permission: "donors.read" as Permission,
         },
       ],
     },
@@ -88,41 +97,70 @@ const data = {
       title: "Inventory",
       url: "/inventory",
       icon: <PackageIcon />,
-    },
-    {
-      title: "Testing & Screening",
-      url: "/testing-screening",
-      icon: <FlaskConicalIcon />,
+      permission: "inventory.read" as Permission,
     },
     {
       title: "Hospital Recipient",
       url: "/hospital-recipient",
       icon: <Building2Icon />,
+      permission: "donors.read" as Permission,
     },
     {
       title: "Notification & Communication",
       url: "/notifications",
       icon: <BellIcon />,
+      permission: "reports.read" as Permission,
     },
     {
       title: "Report & Analytics",
       url: "/reports",
       icon: <BarChart3Icon />,
+      permission: "reports.read" as Permission,
     },
     {
       title: "User Management & Security",
       url: "/user-management",
       icon: <ShieldCheckIcon />,
+      permission: "users.manage" as Permission,
     },
   ],
 }
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const session = readAuthSession()
+type NavItem = (typeof data.navMain)[number]
+
+function canSeeNavItem(session: AuthSession | null, permission?: Permission) {
+  if (!permission) return true
+  return hasPermission(session, permission)
+}
+
+function filterNavItems(session: AuthSession | null, items: NavItem[]) {
+  return items
+    .map((item) => {
+      if (item.items) {
+        const visibleItems = item.items.filter((sub) =>
+          canSeeNavItem(session, sub.permission)
+        )
+        if (visibleItems.length === 0) return null
+        return { ...item, items: visibleItems }
+      }
+      if (!canSeeNavItem(session, item.permission)) return null
+      return item
+    })
+    .filter(Boolean) as NavItem[]
+}
+
+export function AppSidebar({
+  session: sessionProp,
+  ...props
+}: React.ComponentProps<typeof Sidebar> & { session?: AuthSession | null }) {
+  const session = sessionProp ?? readAuthSession()
   const { locale } = useLocale()
+  const currentUser = session ? getUserById(session.userId) : null
 
   const navMain = React.useMemo(() => {
-    if (locale === "en") return data.navMain
+    const visibleItems = filterNavItems(session, data.navMain)
+
+    if (locale === "en") return visibleItems
 
     const topMap: Record<string, string> = {
       Dashboard: "Dashboard",
@@ -137,6 +175,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
     const donorSubMap: Record<string, string> = {
       "Donor Registration": "Donor မှတ်ပုံတင်ခြင်း",
+      "Testing & Screening": "စစ်ဆေးမှု နှင့် စကရင်းနင်း",
       "Donation Records": "လှူဒါန်းမှတ်တမ်း",
       "56-day Eligibility": "56 ရက် cooldown အသိပေးချက်",
       "Donor History": "Donor သမိုင်းကြောင်း",
@@ -147,7 +186,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       Overview: "Overview",
     }
 
-    return data.navMain.map((item) => {
+    return visibleItems.map((item) => {
       if (item.title === "Dashboard") {
         return {
           ...item,
@@ -171,7 +210,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
       return topMap[item.title] ? { ...item, title: topMap[item.title]! } : item
     })
-  }, [locale])
+  }, [locale, session])
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -185,11 +224,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavUser
           user={{
             ...data.user,
-            name: session?.username ?? data.user.name,
-            email:
-              session?.username === "admin"
-                ? "admin@bdms.local"
-                : data.user.email,
+            name: session?.displayName ?? data.user.name,
+            email: currentUser?.email || `${session?.username ?? "user"}@bdms.local`,
+            role: session?.role,
           }}
         />
       </SidebarFooter>

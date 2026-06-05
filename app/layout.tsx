@@ -6,6 +6,7 @@ import { LanguageSwitcher } from "@/components/i18n/language-switcher"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { Toaster } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'})
@@ -54,6 +55,7 @@ export default function RootLayout({
                 <LanguageSwitcher className="h-10 w-[124px] border border-border bg-background font-sans text-[0.85rem] shadow-sm transition-colors hover:bg-muted focus-visible:ring-0" />
               </div>
               {children}
+              <Toaster />
             </LocaleProvider>
           </TooltipProvider>
         </ThemeProvider>

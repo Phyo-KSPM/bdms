@@ -474,6 +474,10 @@ export function DonorWizard({
                       t={{
                         weightKg:
                           locale === "en" ? "Weight (kg)" : "အလေးချိန် (kg)",
+                        weightLbHint: (lb: number) =>
+                          locale === "en"
+                            ? `≈ ${lb} lb`
+                            : `≈ ${lb} lb ပေါင်`,
                         bpSystolic:
                           locale === "en" ? "BP Systolic" : "သွေးပေါင် (အပေါ်)",
                         bpDiastolic:

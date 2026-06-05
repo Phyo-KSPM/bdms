@@ -3,8 +3,73 @@ import { z } from "zod"
 
 const DONOR_STORAGE_KEY = "bdms-donors"
 const DONATION_STORAGE_KEY = "bdms-donor-donations"
-const HIDDEN_DEMO_DONOR_IDS_KEY = "bdms-hidden-demo-donors"
-const DEFAULT_DEMO_DONOR_COUNT = 100
+const SCREENING_VISIT_STORAGE_KEY = "bdms-screening-visits"
+const HIDDEN_DEMO_DONOR_IDS_KEY = "bdms-hidden-demo-donors-v3"
+const DEMO_MONTHLY_DONOR_COUNTS = [
+  22, 35, 48, 28, 65, 42, 70, 38, 55, 24, 68, 31,
+] as const
+const DEFAULT_DEMO_DONOR_COUNT = DEMO_MONTHLY_DONOR_COUNTS.reduce(
+  (sum, value) => sum + value,
+  0
+)
+const DEMO_DATA_SEED = 20260609
+
+function demoWorkflowBounds(total: number) {
+  const pendingEnd = Math.floor(total * 0.25)
+  const passedEnd = pendingEnd + Math.floor(total * 0.2)
+  const deferredEnd = passedEnd + Math.floor(total * 0.1)
+  const infectiousEnd = passedEnd + Math.max(5, Math.floor(total * 0.007))
+
+  return {
+    pendingEnd,
+    passedEnd,
+    deferredEnd,
+    historicalStart: deferredEnd,
+    infectiousStart: passedEnd,
+    infectiousEnd,
+  }
+}
+
+let cachedAllDemoDonors: Donor[] | null = null
+let cachedDemoVisits: ScreeningVisit[] | null = null
+let cachedDemoDonations: DonationRecord[] | null = null
+let cachedListDonations: DonationRecord[] | null = null
+
+function invalidateDemoCache() {
+  cachedAllDemoDonors = null
+  cachedDemoVisits = null
+  cachedDemoDonations = null
+  cachedListDonations = null
+}
+
+function getAllDemoDonors(): Donor[] {
+  if (!cachedAllDemoDonors) {
+    cachedAllDemoDonors = buildDemoDonors()
+  }
+  return cachedAllDemoDonors
+}
+
+function getDemoVisitsForDonors(donors: Donor[]): ScreeningVisit[] {
+  if (!cachedDemoVisits) {
+    cachedDemoVisits = buildDemoScreeningVisits(getAllDemoDonors())
+  }
+  const donorIds = new Set(donors.map((donor) => donor.id))
+  return cachedDemoVisits.filter((visit) => donorIds.has(visit.donorId))
+}
+
+function getDemoDonationsForDonors(
+  donors: Donor[],
+  visits: ScreeningVisit[]
+): DonationRecord[] {
+  if (!cachedDemoDonations) {
+    const allDonors = getAllDemoDonors()
+    const allVisits =
+      cachedDemoVisits ?? buildDemoScreeningVisits(allDonors)
+    cachedDemoDonations = buildDemoDonations(allDonors, allVisits)
+  }
+  const donorIds = new Set(donors.map((donor) => donor.id))
+  return cachedDemoDonations.filter((record) => donorIds.has(record.donorId))
+}
 
 export const BloodTypeSchema = z.enum([
   "A+",
@@ -117,6 +182,37 @@ export const DonationRecordSchema = z.object({
 })
 
 export type DonationRecord = z.infer<typeof DonationRecordSchema>
+
+export const ScreeningVisitStatusSchema = z.enum([
+  "pending",
+  "passed",
+  "deferred",
+])
+
+export const ScreeningVitalsSchema = z.object({
+  weightKg: z.number().finite().positive().nullable(),
+  bpSystolic: z.number().int().positive().nullable(),
+  bpDiastolic: z.number().int().positive().nullable(),
+  pulse: z.number().int().positive().nullable(),
+  hb: z.number().finite().positive().nullable(),
+})
+
+export type ScreeningVitals = z.infer<typeof ScreeningVitalsSchema>
+
+export const ScreeningVisitSchema = z.object({
+  id: z.string().min(1),
+  donorId: z.string().min(1),
+  createdAt: z.string().datetime(),
+  screenedAt: z.string().datetime().nullable(),
+  vitals: ScreeningVitalsSchema,
+  tti: TtiScreeningSchema,
+  status: ScreeningVisitStatusSchema,
+  screenedBy: z.string(),
+  note: z.string(),
+  linkedDonationId: z.string().nullable(),
+})
+
+export type ScreeningVisit = z.infer<typeof ScreeningVisitSchema>
 
 function defaultTti(): TtiScreening {
   return { hiv: "pending", hepB: "pending", hepC: "pending", syphilis: "pending" }
@@ -235,7 +331,7 @@ export function getNextDonorIdPreview(): string {
   const hiddenDemo = listHiddenDemoDonorIds()
   const stored = listStoredDonors()
   const storedIds = new Set(stored.map((d) => d.id))
-  const demo = buildDemoDonors().filter(
+  const demo = getAllDemoDonors().filter(
     (d) => !storedIds.has(d.id) && !hiddenDemo.has(d.id)
   )
 
@@ -251,6 +347,54 @@ function isDemoDonorId(id: string) {
   return id.startsWith("demo-donor-")
 }
 
+function isDemoScreeningId(id: string) {
+  return id.startsWith("demo-screening-")
+}
+
+function isDemoDonationId(id: string) {
+  return id.startsWith("demo-donation-")
+}
+
+function listVisibleDemoDonors(): Donor[] {
+  const hidden = listHiddenDemoDonorIds()
+  const storedIds = new Set(listStoredDonors().map((d) => d.id))
+  return getAllDemoDonors().filter(
+    (d) => !hidden.has(d.id) && !storedIds.has(d.id)
+  )
+}
+
+function demoNegativeTti(): TtiScreening {
+  return { hiv: "negative", hepB: "negative", hepC: "negative", syphilis: "negative" }
+}
+
+function demoEligibleVitals(
+  rng: () => number,
+  gender: z.infer<typeof GenderSchema>
+): ScreeningVitals {
+  const minHb = gender === "female" ? 12.0 : 12.5
+  return {
+    weightKg: Math.round((52 + rng() * 35) * 10) / 10,
+    hb: Math.round((minHb + rng() * 2.5) * 10) / 10,
+    bpSystolic: 110 + Math.floor(rng() * 25),
+    bpDiastolic: 70 + Math.floor(rng() * 15),
+    pulse: 62 + Math.floor(rng() * 25),
+  }
+}
+
+function demoIneligibleVitals(
+  rng: () => number,
+  gender: z.infer<typeof GenderSchema>
+): ScreeningVitals {
+  const minHb = gender === "female" ? 12.0 : 12.5
+  return {
+    weightKg: Math.round((42 + rng() * 7) * 10) / 10,
+    hb: Math.round((minHb - 2 - rng() * 1.5) * 10) / 10,
+    bpSystolic: 185 + Math.floor(rng() * 15),
+    bpDiastolic: 72 + Math.floor(rng() * 10),
+    pulse: 68 + Math.floor(rng() * 20),
+  }
+}
+
 export function hideDemoDonors(ids: string[]) {
   if (typeof window === "undefined") return
   const onlyDemo = ids.filter((id) => isDemoDonorId(id))
@@ -258,6 +402,7 @@ export function hideDemoDonors(ids: string[]) {
   const current = new Set(readStringArray(HIDDEN_DEMO_DONOR_IDS_KEY))
   for (const id of onlyDemo) current.add(id)
   writeStringArray(HIDDEN_DEMO_DONOR_IDS_KEY, Array.from(current))
+  cachedListDonations = null
 }
 
 function listHiddenDemoDonorIds() {
@@ -394,8 +539,21 @@ function normalizeDonor(
   })
 }
 
+function demoCreatedAtInMonth(monthsAgo: number, rng: () => number) {
+  const now = new Date()
+  const created = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1)
+  const daysInMonth = new Date(
+    created.getFullYear(),
+    created.getMonth() + 1,
+    0
+  ).getDate()
+  created.setDate(1 + Math.floor(rng() * daysInMonth))
+  created.setHours(9 + Math.floor(rng() * 8), Math.floor(rng() * 60), 0, 0)
+  return created.toISOString()
+}
+
 function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
-  const rng = mulberry32(20260602)
+  const rng = mulberry32(DEMO_DATA_SEED)
 
   const firstNames = [
     "Aung",
@@ -466,47 +624,270 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
 
   const now = Date.now()
   const demo: Donor[] = []
+  const bounds = demoWorkflowBounds(count)
+  const monthlyCounts = [...DEMO_MONTHLY_DONOR_COUNTS]
+  const monthlyTotal = monthlyCounts.reduce((sum, value) => sum + value, 0)
+  if (monthlyTotal !== count) {
+    monthlyCounts[monthlyCounts.length - 1] += count - monthlyTotal
+  }
 
-  for (let i = 0; i < count; i++) {
-    const name = `${pick(rng, firstNames)} ${pick(rng, lastNames)}`
-    const age = 18 + Math.floor(rng() * (60 - 18 + 1))
-    const bloodType = pick(rng, bloodTypes)
-    const gender = pick(rng, genders)
-    const township = pick(rng, townships)
-    const city = pick(rng, cities)
-    const phone = `09${pad(Math.floor(rng() * 100000000), 8)}`
-    const email = `${name.replace(/\s+/g, ".").toLowerCase()}${pad(
-      Math.floor(rng() * 99) + 1,
-      2
-    )}@example.com`
-    const contactAddress = `Emergency: 09${pad(Math.floor(rng() * 100000000), 8)}`
-    const address = `${Math.floor(rng() * 200) + 1} ${township} Rd, ${city}`
-    const contact = [phone, email].join(" / ")
-    // spread createdAt over last ~365 days
-    const createdAt = new Date(now - Math.floor(rng() * 365) * 86400000).toISOString()
+  let i = 0
+  for (let monthsAgo = monthlyCounts.length - 1; monthsAgo >= 0; monthsAgo--) {
+    const monthCount = monthlyCounts[monthlyCounts.length - 1 - monthsAgo] ?? 0
+    for (let j = 0; j < monthCount; j++) {
+      const name = `${pick(rng, firstNames)} ${pick(rng, lastNames)}`
+      const age = 18 + Math.floor(rng() * (60 - 18 + 1))
+      const bloodType = pick(rng, bloodTypes)
+      const gender = pick(rng, genders)
+      const township = pick(rng, townships)
+      const city = pick(rng, cities)
+      const phone = `09${pad(Math.floor(rng() * 100000000), 8)}`
+      const email = `${name.replace(/\s+/g, ".").toLowerCase()}${pad(
+        Math.floor(rng() * 99) + 1,
+        2
+      )}@example.com`
+      const contactAddress = `Emergency: 09${pad(Math.floor(rng() * 100000000), 8)}`
+      const address = `${Math.floor(rng() * 200) + 1} ${township} Rd, ${city}`
+      const contact = [phone, email].join(" / ")
+      const createdAt = demoCreatedAtInMonth(monthsAgo, rng)
+      const vitals = demoEligibleVitals(rng, gender)
+      const idx = i
 
-    demo.push(
-      normalizeDonor({
-        id: `demo-donor-${pad(i + 1, 4)}`,
-        donorId: formatDonorId(i + 1),
-        name,
-        age,
-        bloodType,
-        contact,
-        contactPhone: phone,
-        contactEmail: email,
-        contactAddress,
-        nrc: makeNrc(i + 1),
-        gender,
-        township,
-        city,
-        address,
-        createdAt,
+      let screening: Screening
+      if (idx < bounds.pendingEnd) {
+        screening = {
+          ...defaultScreening(),
+          weightKg: vitals.weightKg,
+          hb: idx % 2 === 0 ? vitals.hb : null,
+          bpSystolic: idx % 3 === 0 ? vitals.bpSystolic : null,
+          bpDiastolic: idx % 3 === 0 ? vitals.bpDiastolic : null,
+          pulse: vitals.pulse,
+        }
+      } else if (idx < bounds.historicalStart) {
+        screening = {
+          ...defaultScreening(),
+          ...vitals,
+        }
+      } else {
+        screening = {
+          ...defaultScreening(),
+          ...vitals,
+          lastDonationDate: new Date(
+            now - (70 + Math.floor(rng() * 180)) * 86400000
+          ).toISOString(),
+        }
+      }
+
+      demo.push(
+        normalizeDonor({
+          id: `demo-donor-${pad(i + 1, 4)}`,
+          donorId: formatDonorId(i + 1),
+          name,
+          age,
+          bloodType,
+          contact,
+          contactPhone: phone,
+          contactEmail: email,
+          contactAddress,
+          nrc: makeNrc(i + 1),
+          gender,
+          township,
+          city,
+          address,
+          createdAt,
+          screening,
+          medical:
+            idx >= bounds.infectiousStart &&
+            idx < bounds.infectiousEnd &&
+            idx % 2 === 0
+              ? { ...defaultMedical(), infectiousFlags: ["hepatitis"] }
+              : defaultMedical(),
+        })
+      )
+      i += 1
+    }
+  }
+
+  return demo
+}
+
+function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
+  const rng = mulberry32(DEMO_DATA_SEED + 1)
+  const visits: ScreeningVisit[] = []
+  const now = Date.now()
+  const bounds = demoWorkflowBounds(donors.length)
+
+  for (let i = 0; i < donors.length; i++) {
+    const donor = donors[i]!
+    const idx = i
+    const baseVitals: ScreeningVitals = {
+      weightKg: donor.screening.weightKg,
+      bpSystolic: donor.screening.bpSystolic,
+      bpDiastolic: donor.screening.bpDiastolic,
+      pulse: donor.screening.pulse,
+      hb: donor.screening.hb,
+    }
+
+    if (idx < bounds.pendingEnd) {
+      visits.push(
+        normalizeScreeningVisit({
+          id: `demo-screening-${pad(idx + 1, 4)}`,
+          donorId: donor.id,
+          createdAt: donor.createdAt,
+          vitals: baseVitals,
+          status: "pending",
+        })
+      )
+      continue
+    }
+
+    if (idx < bounds.passedEnd) {
+      visits.push(
+        normalizeScreeningVisit({
+          id: `demo-screening-${pad(idx + 1, 4)}`,
+          donorId: donor.id,
+          createdAt: new Date(now - Math.floor(rng() * 3) * 86400000).toISOString(),
+          screenedAt: new Date(now - Math.floor(rng() * 2) * 86400000).toISOString(),
+          vitals: baseVitals,
+          tti: demoNegativeTti(),
+          status: "passed",
+          screenedBy: "Demo Lab Tech",
+        })
+      )
+      continue
+    }
+
+    if (idx < bounds.deferredEnd) {
+      const deferredVitals =
+        idx % 2 === 0
+          ? demoIneligibleVitals(rng, donor.gender ?? "male")
+          : baseVitals
+      const tti =
+        idx % 2 === 1
+          ? { ...demoNegativeTti(), hiv: "positive" as const }
+          : demoNegativeTti()
+      visits.push(
+        normalizeScreeningVisit({
+          id: `demo-screening-${pad(idx + 1, 4)}`,
+          donorId: donor.id,
+          createdAt: new Date(now - Math.floor(rng() * 5) * 86400000).toISOString(),
+          screenedAt: new Date(now - Math.floor(rng() * 4) * 86400000).toISOString(),
+          vitals: deferredVitals,
+          tti,
+          status: "deferred",
+          screenedBy: "Demo Lab Tech",
+          note: "Deferred during pre-donation screening",
+        })
+      )
+      continue
+    }
+
+    const donatedDaysAgo = 70 + Math.floor(rng() * 180)
+    const donatedAt = new Date(now - donatedDaysAgo * 86400000).toISOString()
+    const donationRecordId = `demo-donation-${pad(idx + 1, 4)}`
+
+    visits.push(
+      normalizeScreeningVisit({
+        id: `demo-screening-hist-${pad(idx + 1, 4)}`,
+        donorId: donor.id,
+        createdAt: donatedAt,
+        screenedAt: donatedAt,
+        vitals: baseVitals,
+        tti: demoNegativeTti(),
+        status: "passed",
+        screenedBy: "Demo Lab Tech",
+        linkedDonationId: donationRecordId,
+      })
+    )
+
+    visits.push(
+      normalizeScreeningVisit({
+        id: `demo-screening-${pad(idx + 1, 4)}`,
+        donorId: donor.id,
+        createdAt: new Date(now - Math.floor(rng() * 2) * 86400000).toISOString(),
+        vitals: baseVitals,
+        status: "pending",
       })
     )
   }
 
-  return demo
+  return visits
+}
+
+function demoBloodBagOutcome(rng: () => number): {
+  bloodBagStatus: z.infer<typeof BloodBagStatusSchema>
+  tti: TtiScreening
+} {
+  const roll = rng()
+  if (roll < 0.1) {
+    return {
+      bloodBagStatus: "discarded",
+      tti: { ...demoNegativeTti(), hiv: "positive" },
+    }
+  }
+  if (roll < 0.35) {
+    return {
+      bloodBagStatus: "pending_testing",
+      tti: {
+        hiv: "negative",
+        hepB: "negative",
+        hepC: "pending",
+        syphilis: "pending",
+      },
+    }
+  }
+  return {
+    bloodBagStatus: "ready_to_use",
+    tti: demoNegativeTti(),
+  }
+}
+
+function buildDemoDonations(
+  donors: Donor[],
+  visits: ScreeningVisit[]
+): DonationRecord[] {
+  const rng = mulberry32(DEMO_DATA_SEED + 2)
+  const records: DonationRecord[] = []
+  const now = Date.now()
+
+  const bounds = demoWorkflowBounds(donors.length)
+  const visitsById = new Map(visits.map((visit) => [visit.id, visit]))
+
+  for (let i = bounds.historicalStart; i < donors.length; i++) {
+    const donor = donors[i]!
+    const screening = visitsById.get(`demo-screening-hist-${pad(i + 1, 4)}`)
+    if (!screening) continue
+
+    const donatedDaysAgo = 70 + Math.floor(rng() * 180)
+    const donatedAt = new Date(now - donatedDaysAgo * 86400000).toISOString()
+    const outcome = demoBloodBagOutcome(rng)
+
+    records.push(
+      normalizeDonationRecord({
+        id: `demo-donation-${pad(i + 1, 4)}`,
+        donationId: `BAG-DEMO-${pad(i + 1, 4)}`,
+        donorId: donor.id,
+        donatedAt,
+        donationType: "whole_blood",
+        volumeMl: 450,
+        location: pick(rng, ["Yangon General Hospital", "Mobile Camp A", "BDMS Center"]),
+        vitals: {
+          bpSystolic: screening.vitals.bpSystolic,
+          bpDiastolic: screening.vitals.bpDiastolic,
+          hb: screening.vitals.hb,
+          weightKg: screening.vitals.weightKg,
+        },
+        bloodBagStatus: outcome.bloodBagStatus,
+        tti: outcome.tti,
+        receivedBy: screening.screenedBy,
+        collectedBy: "Demo Phlebotomist",
+        adverseReactions: "",
+        note: "Demo donation (screening passed before collection)",
+      })
+    )
+  }
+
+  return records
 }
 
 function listStoredDonors(): Donor[] {
@@ -558,7 +939,7 @@ export function listDonors(): Donor[] {
   const stored = listStoredDonors()
   const storedIds = new Set(stored.map((d) => d.id))
   const hiddenDemo = listHiddenDemoDonorIds()
-  const demo = buildDemoDonors().filter(
+  const demo = getAllDemoDonors().filter(
     (d) => !storedIds.has(d.id) && !hiddenDemo.has(d.id)
   )
 
@@ -579,11 +960,19 @@ export function deleteDonors(ids: string[]) {
   for (const id of storedIds) deleteDonor(id)
 }
 
+export function reseedDemoDonors() {
+  if (typeof window === "undefined") return
+  window.localStorage.removeItem(HIDDEN_DEMO_DONOR_IDS_KEY)
+  invalidateDemoCache()
+}
+
 export function resetDonorLocalData() {
   if (typeof window === "undefined") return
   window.localStorage.removeItem(DONOR_STORAGE_KEY)
   window.localStorage.removeItem(DONATION_STORAGE_KEY)
+  window.localStorage.removeItem(SCREENING_VISIT_STORAGE_KEY)
   window.localStorage.removeItem(HIDDEN_DEMO_DONOR_IDS_KEY)
+  invalidateDemoCache()
 }
 
 export function upsertDonor(
@@ -622,6 +1011,19 @@ export function upsertDonor(
   } as Donor)
   const next = [...donors.filter((d) => d.id !== id), donor]
   writeArray(DONOR_STORAGE_KEY, next)
+
+  if (!existing) {
+    createScreeningVisit(donor.id, {
+      vitals: {
+        weightKg: donor.screening.weightKg,
+        bpSystolic: donor.screening.bpSystolic,
+        bpDiastolic: donor.screening.bpDiastolic,
+        pulse: donor.screening.pulse,
+        hb: donor.screening.hb,
+      },
+    })
+  }
+
   return donor
 }
 
@@ -636,14 +1038,21 @@ export function deleteDonor(id: string) {
     donors.filter((d) => d.id !== id)
   )
 
-  const donations = listDonations()
+  const donations = listStoredDonations()
   writeArray(
     DONATION_STORAGE_KEY,
     donations.filter((r) => r.donorId !== id)
   )
+  cachedListDonations = null
+
+  const visits = listStoredScreeningVisits()
+  writeArray(
+    SCREENING_VISIT_STORAGE_KEY,
+    visits.filter((v) => v.donorId !== id)
+  )
 }
 
-export function listDonations(): DonationRecord[] {
+function listStoredDonations(): DonationRecord[] {
   const raw = readArray(DONATION_STORAGE_KEY, z.any(), [])
   const migrated = z.array(z.any()).safeParse(raw)
   const list = migrated.success ? migrated.data : []
@@ -689,6 +1098,23 @@ export function listDonations(): DonationRecord[] {
   return normalized.sort((a, b) => a.donatedAt.localeCompare(b.donatedAt))
 }
 
+export function listDonations(): DonationRecord[] {
+  if (cachedListDonations) return cachedListDonations
+
+  const stored = listStoredDonations()
+  const storedIds = new Set(stored.map((r) => r.id))
+  const demoDonors = listVisibleDemoDonors()
+  const demoVisits = getDemoVisitsForDonors(demoDonors)
+  const demo = getDemoDonationsForDonors(demoDonors, demoVisits).filter(
+    (r) => !storedIds.has(r.id)
+  )
+
+  cachedListDonations = [...stored, ...demo].sort((a, b) =>
+    a.donatedAt.localeCompare(b.donatedAt)
+  )
+  return cachedListDonations
+}
+
 export function listDonationsByDonor(donorId: string): DonationRecord[] {
   return listDonations().filter((r) => r.donorId === donorId)
 }
@@ -727,7 +1153,20 @@ export function addDonationRecord(input: {
   collectedBy?: string
   adverseReactions?: string
   note?: string
+  screeningVisitId?: string
 }): DonationRecord {
+  const screening = getPassedScreeningForDonor(input.donorId)
+  if (!screening) {
+    throw new Error("SCREENING_REQUIRED")
+  }
+  if (input.screeningVisitId && input.screeningVisitId !== screening.id) {
+    throw new Error("SCREENING_MISMATCH")
+  }
+
+  const tti = { ...screening.tti, ...(input.tti ?? {}) }
+  const bloodBagStatus =
+    input.bloodBagStatus ?? deriveBagStatusFromTti(tti)
+
   const id = crypto.randomUUID()
   const record: DonationRecord = normalizeDonationRecord({
     id,
@@ -738,20 +1177,22 @@ export function addDonationRecord(input: {
     volumeMl: input.volumeMl ?? null,
     location: input.location ?? "",
     vitals: {
-      bpSystolic: input.vitals?.bpSystolic ?? null,
-      bpDiastolic: input.vitals?.bpDiastolic ?? null,
-      hb: input.vitals?.hb ?? null,
-      weightKg: input.vitals?.weightKg ?? null,
+      bpSystolic: input.vitals?.bpSystolic ?? screening.vitals.bpSystolic,
+      bpDiastolic: input.vitals?.bpDiastolic ?? screening.vitals.bpDiastolic,
+      hb: input.vitals?.hb ?? screening.vitals.hb,
+      weightKg: input.vitals?.weightKg ?? screening.vitals.weightKg,
     },
-    bloodBagStatus: input.bloodBagStatus ?? "pending_testing",
-    tti: { ...defaultTti(), ...(input.tti ?? {}) },
-    receivedBy: input.receivedBy ?? "",
+    bloodBagStatus,
+    tti,
+    receivedBy: input.receivedBy ?? screening.screenedBy,
     collectedBy: input.collectedBy ?? "",
     adverseReactions: input.adverseReactions ?? "",
     note: input.note,
   })
-  const all = listDonations()
+  const all = listStoredDonations()
   writeArray(DONATION_STORAGE_KEY, [...all, record])
+  cachedListDonations = null
+  persistScreeningLink(screening, record.id)
   return record
 }
 
@@ -767,10 +1208,458 @@ export function getNextDonationIdPreview(): string {
 }
 
 export function deleteDonationRecord(id: string) {
-  const records = listDonations()
+  if (isDemoDonationId(id)) return
+
+  const records = listStoredDonations()
   writeArray(
     DONATION_STORAGE_KEY,
     records.filter((r) => r.id !== id)
   )
+  cachedListDonations = null
+
+  const visits = listStoredScreeningVisits()
+  writeArray(
+    SCREENING_VISIT_STORAGE_KEY,
+    visits.map((v) =>
+      v.linkedDonationId === id
+        ? normalizeScreeningVisit({ ...v, linkedDonationId: null })
+        : v
+    )
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pre-donation screening visits                                               */
+/* -------------------------------------------------------------------------- */
+
+function normalizeScreeningVisit(
+  v: Partial<ScreeningVisit> &
+    Pick<ScreeningVisit, "id" | "donorId" | "createdAt">
+): ScreeningVisit {
+  return ScreeningVisitSchema.parse({
+    id: v.id,
+    donorId: v.donorId,
+    createdAt: new Date(v.createdAt).toISOString(),
+    screenedAt: v.screenedAt ? new Date(v.screenedAt).toISOString() : null,
+    vitals: {
+      weightKg: v.vitals?.weightKg ?? null,
+      bpSystolic: v.vitals?.bpSystolic ?? null,
+      bpDiastolic: v.vitals?.bpDiastolic ?? null,
+      pulse: v.vitals?.pulse ?? null,
+      hb: v.vitals?.hb ?? null,
+    },
+    tti: { ...defaultTti(), ...(v.tti ?? {}) },
+    status: v.status ?? "pending",
+    screenedBy: v.screenedBy ?? "",
+    note: v.note ?? "",
+    linkedDonationId: v.linkedDonationId ?? null,
+  })
+}
+
+function listStoredScreeningVisits(): ScreeningVisit[] {
+  const raw = readArray(SCREENING_VISIT_STORAGE_KEY, z.any(), [])
+  const migrated = z.array(z.any()).safeParse(raw)
+  const list = migrated.success ? migrated.data : []
+  const normalized: ScreeningVisit[] = []
+
+  for (const item of list) {
+    const parsed = ScreeningVisitSchema.safeParse(item)
+    if (parsed.success) {
+      normalized.push(parsed.data)
+      continue
+    }
+    const legacy = z
+      .object({
+        id: z.string().min(1),
+        donorId: z.string().min(1),
+        createdAt: z.string(),
+      })
+      .safeParse(item)
+    if (legacy.success) {
+      normalized.push(
+        normalizeScreeningVisit({
+          id: legacy.data.id,
+          donorId: legacy.data.donorId,
+          createdAt: legacy.data.createdAt,
+        })
+      )
+    }
+  }
+
+  return normalized.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export function listScreeningVisits(): ScreeningVisit[] {
+  const stored = listStoredScreeningVisits()
+  const storedDonorIds = new Set(stored.map((v) => v.donorId))
+  const demoDonors = listVisibleDemoDonors()
+  const demo = getDemoVisitsForDonors(demoDonors).filter(
+    (v) => !storedDonorIds.has(v.donorId)
+  )
+
+  return [...stored, ...demo].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  )
+}
+
+export function getScreeningVisitById(id: string): ScreeningVisit | null {
+  return listScreeningVisits().find((v) => v.id === id) ?? null
+}
+
+export function createScreeningVisit(
+  donorId: string,
+  input?: {
+    vitals?: Partial<ScreeningVitals>
+    tti?: Partial<TtiScreening>
+    note?: string
+  }
+): ScreeningVisit {
+  const visit = normalizeScreeningVisit({
+    id: crypto.randomUUID(),
+    donorId,
+    createdAt: new Date().toISOString(),
+    vitals: input?.vitals
+      ? {
+          weightKg: input.vitals.weightKg ?? null,
+          bpSystolic: input.vitals.bpSystolic ?? null,
+          bpDiastolic: input.vitals.bpDiastolic ?? null,
+          pulse: input.vitals.pulse ?? null,
+          hb: input.vitals.hb ?? null,
+        }
+      : undefined,
+    tti: input?.tti
+      ? {
+          hiv: input.tti.hiv ?? "pending",
+          hepB: input.tti.hepB ?? "pending",
+          hepC: input.tti.hepC ?? "pending",
+          syphilis: input.tti.syphilis ?? "pending",
+        }
+      : undefined,
+    note: input?.note,
+    status: "pending",
+  })
+  const all = listStoredScreeningVisits()
+  writeArray(SCREENING_VISIT_STORAGE_KEY, [visit, ...all])
+  return visit
+}
+
+export function ensureScreeningVisit(donorId: string): ScreeningVisit {
+  const existing = listScreeningVisits().find(
+    (v) =>
+      v.donorId === donorId &&
+      v.status === "pending" &&
+      v.linkedDonationId == null
+  )
+  if (existing) return existing
+
+  const passed = getPassedScreeningForDonor(donorId)
+  if (passed) return passed
+
+  const donor = getDonorById(donorId)
+  return createScreeningVisit(donorId, {
+    vitals: donor
+      ? {
+          weightKg: donor.screening.weightKg,
+          bpSystolic: donor.screening.bpSystolic,
+          bpDiastolic: donor.screening.bpDiastolic,
+          pulse: donor.screening.pulse,
+          hb: donor.screening.hb,
+        }
+      : undefined,
+  })
+}
+
+/** Passed screening not yet linked to a donation record. */
+export function getPassedScreeningForDonor(
+  donorId: string
+): ScreeningVisit | null {
+  return (
+    listScreeningVisits().find(
+      (v) =>
+        v.donorId === donorId &&
+        v.status === "passed" &&
+        v.linkedDonationId == null
+    ) ?? null
+  )
+}
+
+export function evaluateVitalsEligibility(
+  vitals: ScreeningVitals,
+  donor?: Donor | null
+): { eligible: boolean; reasons: string[] } {
+  const reasons: string[] = []
+  const minHb = donor?.gender === "female" ? 12.0 : 12.5
+
+  if (vitals.weightKg == null || vitals.weightKg < 50) {
+    reasons.push("weight_below_50kg")
+  }
+  if (vitals.hb == null || vitals.hb < minHb) {
+    reasons.push("hb_low")
+  }
+  if (
+    vitals.bpSystolic != null &&
+    (vitals.bpSystolic < 90 || vitals.bpSystolic > 180)
+  ) {
+    reasons.push("bp_systolic_out_of_range")
+  }
+  if (
+    vitals.bpDiastolic != null &&
+    (vitals.bpDiastolic < 50 || vitals.bpDiastolic > 100)
+  ) {
+    reasons.push("bp_diastolic_out_of_range")
+  }
+
+  return { eligible: reasons.length === 0, reasons }
+}
+
+export function deriveScreeningStatus(
+  vitals: ScreeningVitals,
+  tti: TtiScreening,
+  donor?: Donor | null
+): z.infer<typeof ScreeningVisitStatusSchema> {
+  if (!isTtiComplete(tti)) return "pending"
+  if (TTI_MARKERS.some((m) => tti[m] === "positive")) return "deferred"
+
+  const vitalsCheck = evaluateVitalsEligibility(vitals, donor)
+  if (!vitalsCheck.eligible) return "deferred"
+
+  if (donor?.medical.infectiousFlags.length) return "deferred"
+
+  return "passed"
+}
+
+export function updateScreeningVisit(
+  id: string,
+  input: {
+    vitals?: Partial<ScreeningVitals>
+    tti?: Partial<TtiScreening>
+    status?: z.infer<typeof ScreeningVisitStatusSchema>
+    screenedBy?: string
+    note?: string
+    autoStatus?: boolean
+  }
+): ScreeningVisit | null {
+  const existing = listScreeningVisits().find((v) => v.id === id)
+  if (!existing) return null
+  if (existing.linkedDonationId) return null
+
+  const nextVitals: ScreeningVitals = {
+    ...existing.vitals,
+    ...(input.vitals ?? {}),
+  }
+  const nextTti: TtiScreening = {
+    ...existing.tti,
+    ...(input.tti ?? {}),
+  }
+
+  const donor = getDonorById(existing.donorId)
+  const autoStatus = input.autoStatus ?? true
+  const nextStatus =
+    input.status ??
+    (autoStatus
+      ? deriveScreeningStatus(nextVitals, nextTti, donor)
+      : existing.status)
+
+  const finalized = nextStatus !== "pending"
+
+  const updated = normalizeScreeningVisit({
+    ...existing,
+    vitals: nextVitals,
+    tti: nextTti,
+    status: nextStatus,
+    screenedAt: finalized
+      ? existing.screenedAt ?? new Date().toISOString()
+      : existing.screenedAt,
+    screenedBy:
+      input.screenedBy != null ? input.screenedBy : existing.screenedBy,
+    note: input.note != null ? input.note : existing.note,
+  })
+
+  if (isDemoScreeningId(id)) {
+    const stored = listStoredScreeningVisits()
+    const persisted = normalizeScreeningVisit({
+      ...updated,
+      id: crypto.randomUUID(),
+    })
+    writeArray(SCREENING_VISIT_STORAGE_KEY, [persisted, ...stored])
+    return persisted
+  }
+
+  const visits = listStoredScreeningVisits()
+  writeArray(
+    SCREENING_VISIT_STORAGE_KEY,
+    visits.map((v) => (v.id === id ? updated : v))
+  )
+  return updated
+}
+
+function linkScreeningToDonation(
+  screeningId: string,
+  donationRecordId: string
+): ScreeningVisit | null {
+  const visits = listStoredScreeningVisits()
+  const existing = visits.find((v) => v.id === screeningId)
+  if (!existing) return null
+
+  const updated = normalizeScreeningVisit({
+    ...existing,
+    linkedDonationId: donationRecordId,
+  })
+
+  writeArray(
+    SCREENING_VISIT_STORAGE_KEY,
+    visits.map((v) => (v.id === screeningId ? updated : v))
+  )
+  return updated
+}
+
+function persistScreeningLink(
+  screening: ScreeningVisit,
+  donationRecordId: string
+): ScreeningVisit | null {
+  if (isDemoScreeningId(screening.id)) {
+    const stored = listStoredScreeningVisits()
+    const persisted = normalizeScreeningVisit({
+      ...screening,
+      id: crypto.randomUUID(),
+      linkedDonationId: donationRecordId,
+    })
+    writeArray(SCREENING_VISIT_STORAGE_KEY, [persisted, ...stored])
+    return persisted
+  }
+  return linkScreeningToDonation(screening.id, donationRecordId)
+}
+
+/* -------------------------------------------------------------------------- */
+/* Testing & Screening                                                         */
+/* -------------------------------------------------------------------------- */
+
+export type TtiMarker = keyof TtiScreening
+
+export const TTI_MARKERS: TtiMarker[] = ["hiv", "hepB", "hepC", "syphilis"]
+
+/**
+ * Derive the resulting blood-bag status from a set of TTI results.
+ * - any positive  -> discarded (unsafe to use)
+ * - all negative   -> ready_to_use
+ * - otherwise      -> pending_testing (still waiting on some markers)
+ */
+export function deriveBagStatusFromTti(
+  tti: TtiScreening
+): z.infer<typeof BloodBagStatusSchema> {
+  const values = TTI_MARKERS.map((m) => tti[m])
+  if (values.some((v) => v === "positive")) return "discarded"
+  if (values.every((v) => v === "negative")) return "ready_to_use"
+  return "pending_testing"
+}
+
+/** True when every TTI marker has a final (non-pending) result. */
+export function isTtiComplete(tti: TtiScreening): boolean {
+  return TTI_MARKERS.every((m) => tti[m] !== "pending")
+}
+
+export function getDonationRecordById(id: string): DonationRecord | null {
+  return listDonations().find((r) => r.id === id) ?? null
+}
+
+/** Donation records that still require lab testing (status pending_testing). */
+export function listPendingTesting(): DonationRecord[] {
+  return listDonations()
+    .filter((r) => r.bloodBagStatus === "pending_testing")
+    .sort((a, b) => a.donatedAt.localeCompare(b.donatedAt))
+}
+
+/**
+ * Record / update the TTI screening results for a donation.
+ * By default the blood-bag status is auto-derived from the TTI results.
+ * Returns the updated record, or null if the record was not found.
+ */
+export function updateDonationTesting(
+  id: string,
+  input: {
+    tti?: Partial<TtiScreening>
+    bloodBagStatus?: z.infer<typeof BloodBagStatusSchema>
+    receivedBy?: string
+    note?: string
+    autoStatus?: boolean
+  }
+): DonationRecord | null {
+  if (isDemoDonationId(id)) return null
+
+  const records = listStoredDonations()
+  const existing = records.find((r) => r.id === id)
+  if (!existing) return null
+
+  const nextTti: TtiScreening = {
+    ...existing.tti,
+    ...(input.tti ?? {}),
+  }
+
+  const autoStatus = input.autoStatus ?? true
+  const nextStatus =
+    input.bloodBagStatus ??
+    (autoStatus ? deriveBagStatusFromTti(nextTti) : existing.bloodBagStatus)
+
+  const updated: DonationRecord = normalizeDonationRecord({
+    ...existing,
+    tti: nextTti,
+    bloodBagStatus: nextStatus,
+    receivedBy:
+      input.receivedBy != null ? input.receivedBy : existing.receivedBy,
+    note: input.note != null ? input.note : existing.note,
+  })
+
+  writeArray(
+    DONATION_STORAGE_KEY,
+    records.map((r) => (r.id === id ? updated : r))
+  )
+  cachedListDonations = null
+  return updated
+}
+
+/** Aggregate counts for the Testing & Screening dashboard. */
+export function getTestingStats() {
+  const visits = listScreeningVisits()
+  let pending = 0
+  let passed = 0
+  let deferred = 0
+  let reactive = 0
+
+  for (const v of visits) {
+    if (v.status === "pending") pending += 1
+    else if (v.status === "passed") passed += 1
+    else if (v.status === "deferred") deferred += 1
+
+    if (TTI_MARKERS.some((m) => v.tti[m] === "positive")) reactive += 1
+  }
+
+  return {
+    total: visits.length,
+    pending,
+    passed,
+    deferred,
+    reactive,
+  }
+}
+
+/** Aggregate counts for the blood bag inventory dashboard. */
+export function getInventoryStats() {
+  const records = listDonations()
+  let ready = 0
+  let pending = 0
+  let discarded = 0
+
+  for (const r of records) {
+    if (r.bloodBagStatus === "ready_to_use") ready += 1
+    else if (r.bloodBagStatus === "pending_testing") pending += 1
+    else if (r.bloodBagStatus === "discarded") discarded += 1
+  }
+
+  return {
+    total: records.length,
+    ready,
+    pending,
+    discarded,
+  }
 }
 

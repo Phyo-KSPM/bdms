@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useLocale } from "@/components/i18n/locale-provider"
-import { DEMO_CREDENTIALS, writeAuthSession } from "@/lib/auth"
+import { login } from "@/lib/auth"
 
 const content: Record<
   "en" | "mm",
@@ -36,7 +36,6 @@ const content: Record<
     noAccount: string
     signUp: string
     invalidCredentials: string
-    demoHint: string
   }
 > = {
   en: {
@@ -56,7 +55,6 @@ const content: Record<
     noAccount: "Don't have an account?",
     signUp: "Sign up",
     invalidCredentials: "Invalid username or password.",
-    demoHint: "Use admin / demo123",
   },
   mm: {
     title: "သင့်အကောင့်သို့ ဝင်ရန်",
@@ -75,7 +73,6 @@ const content: Record<
     noAccount: "အကောင့်မရှိသေးဘူးလား?",
     signUp: "စာရင်းသွင်းရန်",
     invalidCredentials: "အသုံးပြုသူအမည် သို့မဟုတ် စကားဝှက် မမှန်ပါ။",
-    demoHint: "admin / demo123 ကိုသုံးပါ",
   },
 }
 
@@ -95,16 +92,13 @@ export function LoginForm({
     event.preventDefault()
     setErrorMessage("")
 
-    const isValidUser =
-      username.trim() === DEMO_CREDENTIALS.username &&
-      password === DEMO_CREDENTIALS.password
+    const session = login(username.trim(), password)
 
-    if (!isValidUser) {
+    if (!session) {
       setErrorMessage(t.invalidCredentials)
       return
     }
 
-    writeAuthSession({ username: DEMO_CREDENTIALS.username })
     router.push("/dashboard")
   }
 
@@ -175,9 +169,6 @@ export function LoginForm({
         </Field>
         <Field>
           <Button type="submit">{t.login}</Button>
-        </Field>
-        <Field>
-          <p className="text-center text-xs text-muted-foreground">{t.demoHint}</p>
           {errorMessage ? (
             <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-sm text-destructive">
               {errorMessage}

@@ -1,7 +1,9 @@
 "use client"
 
+import { useWatch } from "react-hook-form"
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import { kgToLb } from "@/lib/weight"
 
 export function ScreeningStep({
   control,
@@ -10,6 +12,7 @@ export function ScreeningStep({
   control: any
   t: {
     weightKg: string
+    weightLbHint: (lb: number) => string
     bpSystolic: string
     bpDiastolic: string
     pulse: string
@@ -18,6 +21,8 @@ export function ScreeningStep({
     neverDonatedHint: string
   }
 }) {
+  const weightKg = useWatch({ control, name: "screening.weightKg" })
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-2">
@@ -37,6 +42,11 @@ export function ScreeningStep({
                   }
                 />
               </FormControl>
+              {typeof weightKg === "number" && Number.isFinite(weightKg) ? (
+                <p className="text-xs text-muted-foreground">
+                  {t.weightLbHint(kgToLb(weightKg))}
+                </p>
+              ) : null}
               <FormMessage />
             </FormItem>
           )}
