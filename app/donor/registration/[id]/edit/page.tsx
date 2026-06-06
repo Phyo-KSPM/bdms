@@ -1,40 +1,151 @@
 "use client"
 
-import { useEffect, useMemo } from "react"
+/* eslint-disable react-hooks/set-state-in-effect */
+
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { AuthedShell } from "@/components/authed-shell"
 import { useLocale } from "@/components/i18n/locale-provider"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Form } from "@/components/ui/form"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Label } from "@/components/ui/label"
-
+import { toast } from "sonner"
+import { DonorActionLog } from "@/app/donor/registration/_components/DonorActionLog"
+import { DonorDemographicsFields } from "@/app/donor/registration/_components/DonorDemographicsFields"
+import { DonorRelatedNotebook } from "@/app/donor/registration/_components/DonorRelatedNotebook"
+import {
+  formatBagStatusLabel,
+  formatDonationTypeLabel,
+  formatVisitStatusLabel,
+  getDonationTypeOptions,
+  getDonorActionLogLabels,
+  getDonorFieldLabels,
+  getDonorNotebookLabels,
+  getDonorStatusLabels,
+  getInfectiousOptions,
+  getMedicalConditionOptions,
+} from "@/app/donor/registration/_components/donor-profile-i18n"
+import {
+  donorProfileBadgesClass,
+  donorProfileCardClass,
+  donorProfileCardContentClass,
+  donorProfileCardHeaderClass,
+  donorProfileGridClass,
+  donorProfileHeaderRowClass,
+  donorProfileMainCardSlotClass,
+  donorProfileSideColumnClass,
+  donorProfileToolbarClass,
+} from "@/app/donor/registration/_components/donor-profile-layout"
+import {
+  listDonorAuditLogs,
+  type DonorAuditEntry,
+} from "@/lib/donor-audit-log"
 import {
   BloodTypeSchema,
+  DonationTypeSchema,
+  GenderSchema,
   getDonorById,
+  listDonationsByDonor,
+  listScreeningVisitsByDonor,
   upsertDonor,
+  type DonationRecord,
   type Donor,
+  type ScreeningVisit,
 } from "@/lib/donor-store"
+
+const DonorEditSchema = z.object({
+  nrc: z.string().optional(),
+  name: z.string().min(1),
+  age: z.coerce.number().int().min(16).max(80),
+  bloodType: BloodTypeSchema,
+  gender: GenderSchema.nullable(),
+  contactPhone: z.string().min(1),
+  contactEmail: z.string().optional(),
+  contactAddress: z.string().optional(),
+  township: z.string().optional(),
+  city: z.string().optional(),
+  address: z.string().optional(),
+  screening: z.object({
+    weightKg: z.number().nullable(),
+    bpSystolic: z.number().nullable(),
+    bpDiastolic: z.number().nullable(),
+    pulse: z.number().nullable(),
+    hb: z.number().nullable(),
+    lastDonationDate: z.string().datetime().nullable(),
+  }),
+  medical: z.object({
+    conditions: z.array(z.string()),
+    infectiousFlags: z.array(z.string()),
+    medications: z.string(),
+    notes: z.string(),
+  }),
+  donationDetails: z.object({
+    donationType: DonationTypeSchema.nullable(),
+    notes: z.string(),
+  }),
+})
+
+type DonorEditInput = z.input<typeof DonorEditSchema>
+type DonorEditValues = z.output<typeof DonorEditSchema>
+
+function normalizeDonorFormValues(
+  values: DonorEditInput | DonorEditValues
+): DonorEditValues {
+  return {
+    ...values,
+    age: Number(values.age),
+    nrc: values.nrc ?? "",
+    contactEmail: values.contactEmail ?? "",
+    contactAddress: values.contactAddress ?? "",
+    township: values.township ?? "",
+    city: values.city ?? "",
+    address: values.address ?? "",
+    medical: {
+      ...values.medical,
+      medications: values.medical.medications ?? "",
+      notes: values.medical.notes ?? "",
+    },
+    donationDetails: {
+      ...values.donationDetails,
+      notes: values.donationDetails.notes ?? "",
+    },
+  } as DonorEditValues
+}
+
+function serializeDonorFormValues(values: DonorEditInput | DonorEditValues) {
+  return JSON.stringify(normalizeDonorFormValues(values))
+}
 
 export default function Page() {
   const params = useParams<{ id: string }>()
   const donorInternalId = params?.id
   const router = useRouter()
   const { locale } = useLocale()
+  const [donor, setDonor] = useState<Donor | null>(null)
+  const [donations, setDonations] = useState<DonationRecord[]>([])
+  const [visits, setVisits] = useState<ScreeningVisit[]>([])
+  const [auditEntries, setAuditEntries] = useState<DonorAuditEntry[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaveConfirmOpen, setIsSaveConfirmOpen] = useState(false)
+  const [isDiscardConfirmOpen, setIsDiscardConfirmOpen] = useState(false)
+  const [pendingLeaveTo, setPendingLeaveTo] = useState<string | null>(null)
+  const savedSnapshotRef = useRef<string | null>(null)
 
   const t = useMemo(() => {
     if (locale === "en") {
@@ -42,6 +153,18 @@ export default function Page() {
         title: "Edit Donor",
         back: "Back",
         save: "Save",
+        cancel: "Cancel",
+        saveConfirmTitle: "Save changes?",
+        saveConfirmDesc: "Donor profile updates will be saved.",
+        saveConfirmAction: "Save",
+        discardTitle: "Discard changes?",
+        discardDesc: "You have unsaved changes. Are you sure you want to leave?",
+        stay: "Stay",
+        discard: "Discard",
+        saveSuccess: "Donor updated successfully.",
+        identity: "Identity",
+        contactGroup: "Contact",
+        locationGroup: "Location",
         donorId: "Donor ID",
         name: "Name",
         nrc: "NRC",
@@ -58,12 +181,96 @@ export default function Page() {
         male: "Male",
         female: "Female",
         other: "Other",
+        notSet: "Not set",
+        notebookTitle: "Related records",
+        donations: "Donations",
+        screening: "Screening",
+        medical: "Medical history",
+        donationInfo: "Donation info",
+        noDonations: "No donations recorded for this donor.",
+        noVisits: "No screening visits recorded.",
+        donationId: "Bag / Donation ID",
+        donatedAt: "Donated at",
+        donationType: "Type",
+        volume: "Volume",
+        bagStatus: "Bag status",
+        visitDate: "Visit date",
+        visitStatus: "Status",
+        screenedBy: "Screened by",
+        weight: "Weight",
+        bp: "Blood pressure",
+        pulse: "Pulse",
+        hb: "Hb",
+        conditions: "Conditions",
+        infectiousFlags: "Infectious flags",
+        medications: "Medications",
+        medicalNotes: "Medical notes",
+        preferredType: "Preferred donation type",
+        donationNotes: "Donation notes",
+        none: "—",
+        ml: "ml",
+        bagPending: "Pending testing",
+        bagReady: "Ready to use",
+        bagDiscarded: "Discarded",
+        visitPending: "Pending",
+        visitPassed: "Passed",
+        visitDeferred: "Deferred",
+        typeWholeBlood: "Whole blood",
+        typePlatelets: "Platelets",
+        typePlasma: "Plasma",
+        typeDoubleRed: "Double red cells",
+        actionLogTitle: "Action log",
+        actionLogEmpty: "No activity recorded yet.",
+        actionLogActivity: "activity",
+        actionLogActivities: "activities",
+        actionCreated: "Created",
+        actionUpdated: "Updated",
+        actionDeleted: "Deleted",
+        actionRegistered: "Registered donor {id}",
+        actionSystem: "System",
+        actionChanged: "Changes",
+        fieldLabels: {
+          name: "Name",
+          age: "Age",
+          bloodType: "Blood type",
+          gender: "Gender",
+          nrc: "NRC",
+          contactPhone: "Phone",
+          contactEmail: "Email",
+          contactAddress: "Address",
+          township: "Township",
+          city: "City",
+          address: "Full address",
+          "screening.weightKg": "Weight (kg)",
+          "screening.bpSystolic": "BP systolic",
+          "screening.bpDiastolic": "BP diastolic",
+          "screening.pulse": "Pulse",
+          "screening.hb": "Hb",
+          "medical.conditions": "Conditions",
+          "medical.medications": "Medications",
+          "medical.notes": "Medical notes",
+          "donationDetails.donationType": "Donation type",
+          "donationDetails.notes": "Donation notes",
+        },
       } as const
     }
+
     return {
       title: "Donor ပြင်ဆင်ရန်",
       back: "နောက်သို့",
       save: "သိမ်းမယ်",
+      cancel: "မလုပ်တော့",
+      saveConfirmTitle: "ပြောင်းလဲမှုများ သိမ်းမလား?",
+      saveConfirmDesc: "Donor profile အချက်အလက်များ သိမ်းပါမည်။",
+      saveConfirmAction: "သိမ်းမယ်",
+      discardTitle: "မသိမ်းဘဲ ထွက်မလား?",
+      discardDesc: "မသိမ်းရသေးတဲ့ အချက်အလက်တွေ ရှိပါတယ်။ ထွက်မှာ သေချာလား?",
+      stay: "မထွက်တော့ဘူး",
+      discard: "ထွက်မယ်",
+      saveSuccess: "Donor အချက်အလက် သိမ်းပြီးပါပြီ။",
+      identity: "Identity",
+      contactGroup: "ဆက်သွယ်ရန်",
+      locationGroup: "နေရပ်လိပ်စာ",
       donorId: "Donor ID",
       name: "အမည်",
       nrc: "မှတ်ပုံတင်နံပါတ် (NRC)",
@@ -80,32 +287,109 @@ export default function Page() {
       male: "ကျား",
       female: "မ",
       other: "အခြား",
+      notSet: "မသတ်မှတ်ရသေး",
+      notebookTitle: "ဆက်စပ်မှတ်တမ်းများ",
+      donations: "လှူဒါန်းမှုများ",
+      screening: "Screening",
+      medical: "Medical history",
+      donationInfo: "Donation info",
+      noDonations: "လှူဒါန်းမှတ်တမ်း မရှိသေးပါ။",
+      noVisits: "Screening visit မရှိသေးပါ။",
+      donationId: "Bag / Donation ID",
+      donatedAt: "လှူဒါန်းသည့်အချိန်",
+      donationType: "အမျိုးအစား",
+      volume: "ပမာဏ",
+      bagStatus: "Bag status",
+      visitDate: "Visit ရက်စွဲ",
+      visitStatus: "Status",
+      screenedBy: "Screened by",
+      weight: "ကိုယ်အလေးချိန်",
+      bp: "သွေးပေါင်ချိန်",
+      pulse: "Pulse",
+      hb: "Hb",
+      conditions: "ရောဂါများ",
+      infectiousFlags: "Infectious flags",
+      medications: "ဆေးများ",
+      medicalNotes: "Medical notes",
+      preferredType: "Preferred donation type",
+      donationNotes: "Donation notes",
+      none: "—",
+      ml: "ml",
+      bagPending: "Pending testing",
+      bagReady: "Ready to use",
+      bagDiscarded: "Discarded",
+      visitPending: "Pending",
+      visitPassed: "Passed",
+      visitDeferred: "Deferred",
+      typeWholeBlood: "Whole blood",
+      typePlatelets: "Platelets",
+      typePlasma: "Plasma",
+      typeDoubleRed: "Double red cells",
+      actionLogTitle: "Action log",
+      actionLogEmpty: "Activity မရှိသေးပါ။",
+      actionLogActivity: "activity",
+      actionLogActivities: "activities",
+      actionCreated: "Created",
+      actionUpdated: "Updated",
+      actionDeleted: "Deleted",
+      actionRegistered: "Donor {id} မှတ်ပုံတင်ထားသည်",
+      actionSystem: "System",
+      actionChanged: "ပြောင်းလဲမှုများ",
+      fieldLabels: {
+        name: "အမည်",
+        age: "အသက်",
+        bloodType: "သွေးအမျိုးအစား",
+        gender: "ကျား/မ",
+        nrc: "NRC",
+        contactPhone: "ဖုန်း",
+        contactEmail: "အီးမေးလ်",
+        contactAddress: "လိပ်စာ",
+        township: "မြို့နယ်",
+        city: "မြို့",
+        address: "အသေးစိတ်လိပ်စာ",
+        "screening.weightKg": "ကိုယ်အလေးချိန် (kg)",
+        "screening.bpSystolic": "BP systolic",
+        "screening.bpDiastolic": "BP diastolic",
+        "screening.pulse": "Pulse",
+        "screening.hb": "Hb",
+        "medical.conditions": "ရောဂါများ",
+        "medical.medications": "ဆေးများ",
+        "medical.notes": "Medical notes",
+        "donationDetails.donationType": "Donation type",
+        "donationDetails.notes": "Donation notes",
+      },
     } as const
   }, [locale])
 
-  const DonorFormSchema = useMemo(
-    () =>
-      z.object({
-        nrc: z.string().optional(),
-        name: z.string().min(1),
-        age: z.coerce.number().int().min(16).max(80),
-        bloodType: BloodTypeSchema,
-        gender: z.enum(["male", "female", "other"]).nullable(),
-        contactPhone: z.string().min(1),
-        contactEmail: z.string().optional(),
-        contactAddress: z.string().optional(),
-        township: z.string().optional(),
-        city: z.string().optional(),
-        address: z.string().optional(),
-      }),
-    []
+  const bloodTypes = useMemo(() => BloodTypeSchema.options, [])
+
+  const notebookLabels = useMemo(
+    () => getDonorNotebookLabels(locale),
+    [locale]
+  )
+  const statusLabels = useMemo(() => getDonorStatusLabels(locale), [locale])
+  const actionLogLabels = useMemo(
+    () => getDonorActionLogLabels(locale),
+    [locale]
+  )
+  const fieldLabels = useMemo(() => getDonorFieldLabels(locale), [locale])
+  const conditionOptions = useMemo(
+    () => getMedicalConditionOptions(locale),
+    [locale]
   )
 
-  type DonorFormInput = z.input<typeof DonorFormSchema>
-  type DonorFormValues = z.output<typeof DonorFormSchema>
+  const infectiousOptions = useMemo(
+    () => getInfectiousOptions(locale),
+    [locale]
+  )
 
-  const form = useForm<DonorFormInput, unknown, DonorFormValues>({
-    resolver: zodResolver(DonorFormSchema),
+  const donationTypes = useMemo(
+    () => getDonationTypeOptions(locale),
+    [locale]
+  )
+
+  const form = useForm<DonorEditInput, unknown, DonorEditValues>({
+    resolver: zodResolver(DonorEditSchema),
     defaultValues: {
       nrc: "",
       name: "",
@@ -118,35 +402,113 @@ export default function Page() {
       township: "",
       city: "",
       address: "",
+      screening: {
+        weightKg: null,
+        bpSystolic: null,
+        bpDiastolic: null,
+        pulse: null,
+        hb: null,
+        lastDonationDate: null,
+      },
+      medical: {
+        conditions: [],
+        infectiousFlags: [],
+        medications: "",
+        notes: "",
+      },
+      donationDetails: {
+        donationType: null,
+        notes: "",
+      },
     },
   })
 
-  const bloodTypes = useMemo(() => BloodTypeSchema.options, [])
-
-  const donor: Donor | null = useMemo(() => {
-    if (!donorInternalId) return null
-    return getDonorById(donorInternalId)
-  }, [donorInternalId])
+  const watchedName = useWatch({ control: form.control, name: "name" })
+  const watchedBloodType = useWatch({ control: form.control, name: "bloodType" })
+  const watchedGender = useWatch({ control: form.control, name: "gender" })
+  const watchedAge = useWatch({ control: form.control, name: "age" })
+  const { isDirty } = form.formState
 
   useEffect(() => {
-    if (!donor) return
-    form.reset({
-      nrc: donor.nrc,
-      name: donor.name,
-      age: donor.age,
-      bloodType: donor.bloodType,
-      gender: donor.gender,
-      contactPhone: donor.contactPhone,
-      contactEmail: donor.contactEmail,
-      contactAddress: donor.contactAddress,
-      township: donor.township,
-      city: donor.city,
-      address: donor.address,
-    })
-  }, [donor, form])
+    if (!donorInternalId) {
+      setIsLoading(false)
+      return
+    }
+    const found = getDonorById(donorInternalId)
+    setDonor(found)
+    if (found) {
+      const initialValues = {
+        nrc: found.nrc,
+        name: found.name,
+        age: found.age,
+        bloodType: found.bloodType,
+        gender: found.gender,
+        contactPhone: found.contactPhone,
+        contactEmail: found.contactEmail,
+        contactAddress: found.contactAddress,
+        township: found.township,
+        city: found.city,
+        address: found.address,
+        screening: found.screening,
+        medical: found.medical,
+        donationDetails: found.donationDetails,
+      }
+      form.reset(initialValues)
+      savedSnapshotRef.current = serializeDonorFormValues(initialValues)
+      setDonations(
+        listDonationsByDonor(found.id).sort((a, b) =>
+          b.donatedAt.localeCompare(a.donatedAt)
+        )
+      )
+      setVisits(listScreeningVisitsByDonor(found.id))
+      const logs = listDonorAuditLogs(found.id)
+      if (logs.length > 0) {
+        setAuditEntries(logs)
+      } else {
+        setAuditEntries([
+          {
+            id: `seed-${found.id}`,
+            at: found.createdAt,
+            donorId: found.id,
+            donorCode: found.donorId,
+            actorId: "system",
+            actorName: actionLogLabels.system,
+            action: "created",
+            summary: actionLogLabels.registered.replace("{id}", found.donorId),
+          },
+        ])
+      }
+    } else {
+      setDonations([])
+      setVisits([])
+      setAuditEntries([])
+      savedSnapshotRef.current = null
+    }
+    setIsLoading(false)
+  }, [donorInternalId, form, actionLogLabels.registered, actionLogLabels.system])
 
-  function onSubmit(values: DonorFormValues) {
-    if (!donorInternalId) return
+  function formatGender(value: Donor["gender"]) {
+    if (value === "male") return t.male
+    if (value === "female") return t.female
+    if (value === "other") return t.other
+    return t.notSet
+  }
+
+  function formatBagStatus(status: DonationRecord["bloodBagStatus"]) {
+    return formatBagStatusLabel(status, statusLabels)
+  }
+
+  function formatVisitStatus(status: ScreeningVisit["status"]) {
+    return formatVisitStatusLabel(status, statusLabels)
+  }
+
+  function formatDonationType(type: Donor["donationDetails"]["donationType"]) {
+    const label = formatDonationTypeLabel(type, statusLabels)
+    return label || t.none
+  }
+
+  function onSubmit(values: DonorEditValues) {
+    if (!donorInternalId || !donor) return
     const contact = [values.contactPhone, values.contactEmail, values.contactAddress]
       .map((s) => String(s ?? "").trim())
       .filter(Boolean)
@@ -156,243 +518,305 @@ export default function Page() {
       contact,
       ...values,
     })
-    router.push(`/donor/registration/${donorInternalId}`)
+    toast.success(t.saveSuccess)
+    router.replace(`/donor/registration/${donorInternalId}`)
   }
+
+  function hasUnsavedChanges() {
+    if (savedSnapshotRef.current == null) return isDirty
+    return serializeDonorFormValues(form.getValues()) !== savedSnapshotRef.current
+  }
+
+  function requestLeave(to: string) {
+    setIsSaveConfirmOpen(false)
+    if (hasUnsavedChanges()) {
+      setPendingLeaveTo(to)
+      setIsDiscardConfirmOpen(true)
+      return
+    }
+    router.replace(to)
+  }
+
+  async function requestSave() {
+    const ok = await form.trigger()
+    if (!ok) return
+    setIsSaveConfirmOpen(true)
+  }
+
+  function confirmSave() {
+    setIsSaveConfirmOpen(false)
+    form.handleSubmit(onSubmit)()
+  }
+
+  function confirmDiscard() {
+    const to =
+      pendingLeaveTo ??
+      (donorInternalId
+        ? `/donor/registration/${donorInternalId}`
+        : "/donor/registration")
+    setIsDiscardConfirmOpen(false)
+    setPendingLeaveTo(null)
+    router.replace(to)
+  }
+
+  const viewPath = donorInternalId
+    ? `/donor/registration/${donorInternalId}`
+    : "/donor/registration"
+
+  const displayName = watchedName || donor?.name || "—"
+  const displayBloodType = watchedBloodType || donor?.bloodType || "—"
+  const displayGender = formatGender(watchedGender ?? donor?.gender ?? null)
+  const displayAge =
+    watchedAge != null && watchedAge !== ""
+      ? String(watchedAge)
+      : donor?.age != null
+        ? String(donor.age)
+        : "—"
+
+  const notebookDonor: Donor | null = donor
+    ? {
+        ...donor,
+        name: String(watchedName || donor.name),
+        bloodType: (watchedBloodType || donor.bloodType) as Donor["bloodType"],
+        gender: watchedGender ?? donor.gender,
+        age: Number(watchedAge || donor.age),
+        screening: form.getValues("screening"),
+        medical: form.getValues("medical"),
+        donationDetails: form.getValues("donationDetails"),
+      }
+    : null
 
   return (
     <AuthedShell title={t.title}>
-      <div className="mx-auto w-full max-w-5xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Button variant="secondary" onClick={() => router.back()}>
-            {t.back}
-          </Button>
-        </div>
+      <AlertDialog open={isSaveConfirmOpen} onOpenChange={setIsSaveConfirmOpen}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.saveConfirmTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{t.saveConfirmDesc}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.stay}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSave}>
+              {t.saveConfirmAction}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t.title}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!donor ? (
-              <div className="space-y-3">
-                <Skeleton className="h-4 w-40" />
-                <Skeleton className="h-8 w-full max-w-md" />
-                <Skeleton className="h-8 w-full max-w-sm" />
-              </div>
-            ) : (
-              <Form {...form}>
-                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                  <div className="grid gap-2">
-                    <Label>{t.donorId}</Label>
-                    <Input value={donor.donorId} disabled className="font-mono" />
+      <AlertDialog
+        open={isDiscardConfirmOpen}
+        onOpenChange={(open) => {
+          setIsDiscardConfirmOpen(open)
+          if (!open) setPendingLeaveTo(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.discardTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{t.discardDesc}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.stay}</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={confirmDiscard}>
+              {t.discard}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <div className="mx-auto w-full max-w-7xl px-1 sm:px-0">
+        {isLoading ? (
+          <div className={donorProfileGridClass}>
+            <div className={donorProfileToolbarClass}>
+              <Skeleton className="h-8 w-16" />
+              <Skeleton className="h-8 w-16" />
+              <Skeleton className="h-8 w-14" />
+            </div>
+            <Skeleton
+              className={`h-[480px] w-full rounded-xl ${donorProfileMainCardSlotClass}`}
+            />
+            <Skeleton
+              className={`h-[480px] w-full rounded-xl ${donorProfileSideColumnClass}`}
+            />
+          </div>
+        ) : !donor || !notebookDonor ? (
+          <Card>
+            <CardContent className="py-8 text-sm text-muted-foreground">
+              Donor not found.
+            </CardContent>
+          </Card>
+        ) : (
+          <div className={donorProfileGridClass}>
+            <div className={donorProfileToolbarClass}>
+              <Button
+                variant="secondary"
+                size="sm"
+                type="button"
+                onClick={() => requestLeave(viewPath)}
+              >
+                {t.back}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={() => requestLeave(viewPath)}
+              >
+                {t.cancel}
+              </Button>
+              <Button size="sm" type="button" onClick={requestSave}>
+                {t.save}
+              </Button>
+            </div>
+            <Card className={`${donorProfileCardClass} ${donorProfileMainCardSlotClass}`}>
+                <CardHeader className={donorProfileCardHeaderClass}>
+                  <div className={donorProfileHeaderRowClass}>
+                    <div className="min-w-0 space-y-1">
+                      <CardTitle className="text-lg">{displayName}</CardTitle>
+                      <p className="font-mono text-sm text-muted-foreground">
+                        {donor.donorId}
+                      </p>
+                    </div>
+                    <div className={donorProfileBadgesClass}>
+                      <Badge variant="secondary">{displayBloodType}</Badge>
+                      <Badge variant="outline">{displayGender}</Badge>
+                      <Badge variant="outline">
+                        {t.age}: {displayAge}
+                      </Badge>
+                    </div>
                   </div>
-
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t.name}</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="nrc"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t.nrc}</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <FormField
+                </CardHeader>
+                <CardContent className={donorProfileCardContentClass}>
+                <Form {...form}>
+                  <form
+                    id="donor-edit-form"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      void requestSave()
+                    }}
+                    className="space-y-4"
+                  >
+                    <DonorDemographicsFields
                       control={form.control}
-                      name="age"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.age}</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              min={16}
-                              max={80}
-                              className="h-10"
-                              value={
-                                typeof field.value === "number" ||
-                                typeof field.value === "string"
-                                  ? field.value
-                                  : ""
-                              }
-                              onChange={(e) => field.onChange(e.target.value)}
-                              onBlur={field.onBlur}
-                              name={field.name}
-                              ref={field.ref}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
+                      donorId={donor.donorId}
+                      bloodTypes={bloodTypes}
+                      labels={{
+                        identity: t.identity,
+                        contactGroup: t.contactGroup,
+                        locationGroup: t.locationGroup,
+                        donorId: t.donorId,
+                        name: t.name,
+                        nrc: t.nrc,
+                        age: t.age,
+                        bloodType: t.bloodType,
+                        gender: t.gender,
+                        phone: t.phone,
+                        email: t.email,
+                        contactAddress: t.contactAddress,
+                        township: t.township,
+                        city: t.city,
+                        fullAddress: t.fullAddress,
+                        selectPlaceholder: t.selectPlaceholder,
+                        male: t.male,
+                        female: t.female,
+                        other: t.other,
+                      }}
                     />
 
-                    <FormField
+                    <DonorRelatedNotebook
+                      donor={notebookDonor}
+                      donations={donations}
+                      visits={visits}
                       control={form.control}
-                      name="bloodType"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.bloodType}</FormLabel>
-                          <Select value={field.value} onValueChange={field.onChange}>
-                            <FormControl>
-                              <SelectTrigger className="h-10">
-                                <SelectValue placeholder={t.selectPlaceholder} />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {bloodTypes.map((bt) => (
-                                <SelectItem key={bt} value={bt}>
-                                  {bt}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
+                      conditionOptions={conditionOptions}
+                      infectiousOptions={infectiousOptions}
+                      donationTypes={donationTypes}
+                      editLabels={{
+                        screening: {
+                          weightKg:
+                            locale === "en" ? "Weight (kg)" : "အလေးချိန် (kg)",
+                          weightLbHint: (lb: number) =>
+                            locale === "en"
+                              ? `≈ ${lb} lb`
+                              : `≈ ${lb} lb ပေါင်`,
+                          bpSystolic:
+                            locale === "en"
+                              ? "BP Systolic"
+                              : "သွေးပေါင် (အပေါ်)",
+                          bpDiastolic:
+                            locale === "en"
+                              ? "BP Diastolic"
+                              : "သွေးပေါင် (အောက်)",
+                          pulse:
+                            locale === "en" ? "Pulse" : "သွေးခုန်နှုန်း",
+                          hb:
+                            locale === "en"
+                              ? "Hemoglobin (Hb)"
+                              : "သွေးအား (Hb)",
+                          lastDonationDate:
+                            locale === "en"
+                              ? "Last donation date"
+                              : "နောက်ဆုံးလှူခဲ့သည့်ရက်",
+                          neverDonatedHint:
+                            locale === "en"
+                              ? "Leave empty if never donated."
+                              : "မလှူဖူးသေးရင် မဖြည့်ပါ။",
+                        },
+                        medical: {
+                          conditions:
+                            locale === "en" ? "Conditions" : "ရောဂါအခံ",
+                          infectious:
+                            locale === "en"
+                              ? "Infectious diseases"
+                              : "ကူးစက်ရောဂါများ",
+                          medications:
+                            locale === "en"
+                              ? "Current medications"
+                              : "လက်ရှိသောက်နေသော ဆေးဝါးများ",
+                          notes: locale === "en" ? "Notes" : "မှတ်ချက်",
+                        },
+                        donation: {
+                          donationType:
+                            locale === "en"
+                              ? "Donation type"
+                              : "သွေးလှူအမျိုးအစား",
+                          notes: locale === "en" ? "Notes" : "မှတ်ချက်",
+                          selectPlaceholder: t.selectPlaceholder,
+                        },
+                      }}
+                      labels={notebookLabels}
+                      formatBagStatus={formatBagStatus}
+                      formatVisitStatus={formatVisitStatus}
+                      formatDonationType={formatDonationType}
                     />
+                  </form>
+                </Form>
+              </CardContent>
+            </Card>
 
-                    <FormField
-                      control={form.control}
-                      name="gender"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.gender}</FormLabel>
-                          <Select
-                            value={field.value ?? ""}
-                            onValueChange={(v) => field.onChange(v ? v : null)}
-                          >
-                            <FormControl>
-                              <SelectTrigger className="h-10">
-                                <SelectValue placeholder={t.selectPlaceholder} />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="male">{t.male}</SelectItem>
-                              <SelectItem value="female">{t.female}</SelectItem>
-                              <SelectItem value="other">{t.other}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="contactPhone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.phone}</FormLabel>
-                          <FormControl>
-                            <Input {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="contactEmail"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.email}</FormLabel>
-                          <FormControl>
-                            <Input {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <FormField
-                    control={form.control}
-                    name="contactAddress"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t.contactAddress}</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="township"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.township}</FormLabel>
-                          <FormControl>
-                            <Input {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="city"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t.city}</FormLabel>
-                          <FormControl>
-                            <Input {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <FormField
-                    control={form.control}
-                    name="address"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t.fullAddress}</FormLabel>
-                        <FormControl>
-                          <Textarea {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="flex justify-end">
-                    <Button type="submit">{t.save}</Button>
-                  </div>
-                </form>
-              </Form>
-            )}
-          </CardContent>
-        </Card>
+            <div className={donorProfileSideColumnClass}>
+              <DonorActionLog
+              entries={auditEntries}
+              fieldLabels={fieldLabels}
+              labels={{
+                title: actionLogLabels.title,
+                empty: actionLogLabels.empty,
+                activitySingular: actionLogLabels.activitySingular,
+                activityPlural: actionLogLabels.activityPlural,
+                created: actionLogLabels.created,
+                updated: actionLogLabels.updated,
+                deleted: actionLogLabels.deleted,
+                registered: actionLogLabels.registered,
+                system: actionLogLabels.system,
+                changed: actionLogLabels.changed,
+                from: actionLogLabels.from,
+                to: actionLogLabels.to,
+              }}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </AuthedShell>
   )
 }
-

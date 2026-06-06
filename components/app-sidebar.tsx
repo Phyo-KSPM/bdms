@@ -72,6 +72,11 @@ const data = {
           permission: "screening.read" as Permission,
         },
         {
+          title: "Blood Collection",
+          url: "/donor/collection",
+          permission: "donations.write" as Permission,
+        },
+        {
           title: "Donation Records",
           url: "/donor/donations",
           permission: "donations.read" as Permission,
@@ -87,7 +92,7 @@ const data = {
           permission: "donors.read" as Permission,
         },
         {
-          title: "Donor Card / Certificate",
+          title: "Donor EID Card",
           url: "/donor/certificate",
           permission: "donors.read" as Permission,
         },
@@ -176,10 +181,11 @@ export function AppSidebar({
     const donorSubMap: Record<string, string> = {
       "Donor Registration": "Donor မှတ်ပုံတင်ခြင်း",
       "Testing & Screening": "စစ်ဆေးမှု နှင့် စကရင်းနင်း",
+      "Blood Collection": "သွေးကောက်ယူမှု",
       "Donation Records": "လှူဒါန်းမှတ်တမ်း",
       "56-day Eligibility": "56 ရက် cooldown အသိပေးချက်",
       "Donor History": "Donor သမိုင်းကြောင်း",
-      "Donor Card / Certificate": "Donor Card / Certificate",
+      "Donor EID Card": "Donor EID Card",
     }
 
     const dashboardSubMap: Record<string, string> = {

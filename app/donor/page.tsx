@@ -16,8 +16,13 @@ const items = [
     href: "/testing-screening",
   },
   {
+    title: "သွေးကောက်ယူမှု",
+    description: "EID scan → screening/eligibility စစ်ဆေး → သွေးအိတ် scan → လှူအကြိမ်ရေ auto update။",
+    href: "/donor/collection",
+  },
+  {
     title: "လှူဒါန်းမှတ်တမ်း",
-    description: "စစ်ဆေးမှု Pass ဖြစ်ပြီးမှ သွေးအိတ်ထဲ ကောက်ယူမှု မှတ်တမ်းတင်ပါ။",
+    description: "လှူဒါန်းမှတ်တမ်းများ ကြည့်ရှု/စီမံခန့်ခွဲရန် (admin)။",
     href: "/donor/donations",
   },
   {
@@ -31,8 +36,8 @@ const items = [
     href: "/donor/history",
   },
   {
-    title: "Donor Card / Certificate",
-    description: "Print လုပ်လို့ရတဲ့ Donor card / certificate စာရွက်ထုတ်ပေးပါ။",
+    title: "Donor EID Card",
+    description: "Member Card စာအုပ်အစား Electronic Donor ID (EID) card ထုတ်ပေးပါ။",
     href: "/donor/certificate",
   },
 ] as const

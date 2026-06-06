@@ -527,7 +527,11 @@ export default function Page() {
                                 {isPending ? t.screen : t.review}
                               </Button>
                               {v.status === "passed" && !v.linkedDonationId ? (
-                                <Link href="/donor/donations">
+                                <Link
+                                  href={`/donor/collection?donorId=${encodeURIComponent(
+                                    donor?.donorId ?? v.donorId
+                                  )}`}
+                                >
                                   <Button size="sm" variant="secondary">
                                     {t.goDonate}
                                   </Button>

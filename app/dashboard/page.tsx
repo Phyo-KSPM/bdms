@@ -3,6 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import { differenceInCalendarDays, isAfter, subDays } from "date-fns"
 import {
   Area,
@@ -62,6 +63,10 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import {
+  buildDonorListHref,
+  type DashboardDonorView,
+} from "@/lib/donor-dashboard-navigation"
+import {
   listDonations,
   listDonors,
   BloodTypeSchema,
@@ -88,7 +93,8 @@ const DONOR_GENDER_COLORS = {
 } as const
 
 export default function Page() {
-    const { locale } = useLocale()
+  const router = useRouter()
+  const { locale } = useLocale()
 
   const t = useMemo(() => {
     if (locale === "en") {
@@ -401,6 +407,18 @@ export default function Page() {
     setBloodTypeFilter("all")
   }
 
+  function openDonorList(view: DashboardDonorView) {
+    router.push(
+      buildDonorListHref({
+        view,
+        bloodType: bloodTypeFilter,
+        from: filterRange.start,
+        to: filterRange.end,
+        groupBy: "bloodType",
+      })
+    )
+  }
+
   const chartConfig = useMemo<ChartConfig>(
     () => ({
       male: {
@@ -629,7 +647,7 @@ export default function Page() {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
               <h1 className="text-xl font-semibold tracking-tight">{t.title}</h1>
               <p className="text-sm text-muted-foreground">{t.subtitle}</p>
@@ -737,7 +755,16 @@ export default function Page() {
               return (
                 <Card
                   key={card.key}
-                  className="overflow-hidden transition-shadow hover:shadow-md"
+                  role="button"
+                  tabIndex={0}
+                  className="cursor-pointer overflow-hidden transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => openDonorList(card.key as DashboardDonorView)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault()
+                      openDonorList(card.key as DashboardDonorView)
+                    }
+                  }}
                 >
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle className="text-sm font-medium text-muted-foreground">

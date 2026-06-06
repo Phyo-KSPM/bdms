@@ -2,13 +2,26 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { format } from "date-fns"
+import { Trash2Icon } from "lucide-react"
 import { AuthedShell } from "@/components/authed-shell"
 import { useLocale } from "@/components/i18n/locale-provider"
+import { usePermissions } from "@/hooks/use-permissions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -19,10 +32,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { toast } from "sonner"
+import { readAuthSession } from "@/lib/auth"
+import {
+  filterDonorMatches,
+  resolveDonorFromQuery,
+} from "@/lib/donor-lookup"
 import {
   addDonationRecord,
   DonationTypeSchema,
-  ensureScreeningVisit,
   getNextDonationIdPreview,
   getPassedScreeningForDonor,
   canDonateNow,
@@ -33,6 +50,7 @@ import {
   type DonationRecord,
   type Donor,
 } from "@/lib/donor-store"
+import { PermissionDeniedError } from "@/lib/permissions"
 
 function toDateTimeLocalValue(date: Date) {
   const pad = (n: number) => String(n).padStart(2, "0")
@@ -43,6 +61,8 @@ function toDateTimeLocalValue(date: Date) {
 
 export default function Page() {
   const { locale } = useLocale()
+  const { canDeleteDonations, canWriteDonations } = usePermissions()
+  const donorInputRef = useRef<HTMLInputElement>(null)
   const [donors, setDonors] = useState<Donor[]>([])
   const [selectedDonorId, setSelectedDonorId] = useState<string>("")
   const [donorQuery, setDonorQuery] = useState<string>("")
@@ -58,6 +78,8 @@ export default function Page() {
   const [adverseReactions, setAdverseReactions] = useState<string>("")
   const [note, setNote] = useState("")
   const [records, setRecords] = useState<DonationRecord[]>([])
+  const [pendingDeleteRecord, setPendingDeleteRecord] =
+    useState<DonationRecord | null>(null)
 
   const t = useMemo(() => {
     if (locale === "en") {
@@ -87,13 +109,23 @@ export default function Page() {
         statusCooldown: "Cooldown (56 days)",
         lastDonation: "Last donation",
         nextEligible: "Next eligible",
-        screeningPassed: "Pre-donation screening passed",
+        screeningPassed: "Pre-donation screening passed (today)",
         screeningRequired:
           "Complete pre-donation screening before collecting blood.",
+        screeningExpired:
+          "Screening pass must be from today. Re-screen the donor first.",
+        goCollection: "Use Blood Collection (EID scan)",
         goScreening: "Go to screening",
         workflowHint:
           "Workflow: Register → Screen (pass) → Collect blood into bag",
         viewInventory: "View all blood bags",
+        delete: "Delete",
+        deleteTitle: "Delete donation record?",
+        deleteDesc:
+          "This will permanently remove this blood collection record. This action cannot be undone.",
+        cancel: "Cancel",
+        permissionDenied:
+          "You do not have permission to delete donation records.",
       } as const
     }
     return {
@@ -122,13 +154,22 @@ export default function Page() {
       statusCooldown: "Cooldown (56 days)",
       lastDonation: "နောက်ဆုံးလှူခဲ့သည့်ရက်",
       nextEligible: "နောက်တစ်ကြိမ် လှူနိုင်မည့်ရက်",
-      screeningPassed: "လှူဒါန်းမီ စစ်ဆေးမှု Pass ဖြစ်ပြီ",
+      screeningPassed: "လှူဒါန်းမီ screening Pass (ယနေ့)",
       screeningRequired:
-        "သွေးမကောက်မီ စစ်ဆေးမှု ပြီးမြောက်ရန် လိုအပ်ပါသည်။",
+        "သွေးမကောက်မီ screening ပြီးမြောက်ရန် လိုအပ်ပါသည်။",
+      screeningExpired:
+        "ယနေ့ screening Pass လိုအပ်ပါသည်။ Donor ကို ပြန်စစ်ဆေးပါ။",
+      goCollection: "သွေးကောက်ယူမှု (EID scan)",
       goScreening: "စစ်ဆေးရန် သွားမည်",
       workflowHint:
         "အဆင့်များ: မှတ်ပုံတင် → စစ်ဆေး (Pass) → သွေးအိတ်ထဲ ကောက်ယူ",
       viewInventory: "သွေးအိတ် စတော့ ကြည့်ရန်",
+      delete: "ဖျက်မယ်",
+      deleteTitle: "လှူဒါန်းမှတ်တမ်း ဖျက်မလား?",
+      deleteDesc:
+        "သွေးအိတ် ကောက်ယူမှု မှတ်တမ်းကို အပြီးဖျက်ပါမည်။ ပြန်မရနိုင်ပါ။",
+      cancel: "မလုပ်တော့",
+      permissionDenied: "လှူဒါန်းမှတ်တမ်း ဖျက်ခွင့် မရှိပါ။",
     } as const
   }, [locale])
 
@@ -159,6 +200,7 @@ export default function Page() {
 
   useEffect(() => {
     refreshDonors()
+    donorInputRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -175,29 +217,19 @@ export default function Page() {
     refreshRecords(selectedDonorId)
   }, [selectedDonorId])
 
-  const donorMatches = useMemo(() => {
-    const q = donorQuery.trim().toLowerCase()
-    if (!q) return []
-    return donors
-      .filter((d) => {
-        const hay = [d.donorId, d.name, d.contactPhone, d.nrc]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-        return hay.includes(q)
-      })
-      .slice(0, 8)
-  }, [donorQuery, donors])
+  const donorMatches = useMemo(
+    () => filterDonorMatches(donors, donorQuery),
+    [donorQuery, donors]
+  )
 
   useEffect(() => {
-    const q = donorQuery.trim().toLowerCase()
-    if (!q) {
-      setSelectedDonorId("")
-      return
-    }
-    const exact = donors.find((d) => d.donorId.toLowerCase() === q)
+    const exact = resolveDonorFromQuery(donors, donorQuery)
     if (exact) {
       setSelectedDonorId(exact.id)
+      return
+    }
+    if (!donorQuery.trim()) {
+      setSelectedDonorId("")
     }
   }, [donorQuery, donors])
 
@@ -216,24 +248,104 @@ export default function Page() {
     return canDonateNow(selectedDonorId)
   }, [selectedDonorId, records])
 
+  const referenceDate = useMemo(
+    () => (donatedAt ? new Date(donatedAt) : new Date()),
+    [donatedAt]
+  )
+
   const passedScreening = useMemo(() => {
+    void screeningTick
+    if (!selectedDonorId) return null
+    return getPassedScreeningForDonor(selectedDonorId, {
+      sameDayOnly: true,
+      referenceDate,
+    })
+  }, [selectedDonorId, screeningTick, referenceDate])
+
+  const passedScreeningAnyDay = useMemo(() => {
     void screeningTick
     if (!selectedDonorId) return null
     return getPassedScreeningForDonor(selectedDonorId)
   }, [selectedDonorId, screeningTick])
 
-  const canCollectBlood =
-    !!selectedDonorId && eligibleNow && passedScreening != null
+  const screeningExpired =
+    passedScreeningAnyDay != null && passedScreening == null
 
-  useEffect(() => {
-    if (!selectedDonorId) return
-    ensureScreeningVisit(selectedDonorId)
-    setScreeningTick((n) => n + 1)
-  }, [selectedDonorId])
+  const canCollectBlood =
+    canWriteDonations &&
+    !!selectedDonorId &&
+    eligibleNow &&
+    passedScreening != null
+
+  function selectDonor(d: Donor) {
+    setSelectedDonorId(d.id)
+    setDonorQuery(d.eid ?? d.donorId)
+  }
+
+  function handleDonorKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return
+    const exact = resolveDonorFromQuery(donors, donorQuery)
+    if (exact) {
+      selectDonor(exact)
+      return
+    }
+    if (donorMatches.length === 1) {
+      selectDonor(donorMatches[0])
+    }
+  }
+
+  function confirmDeleteRecord() {
+    if (!pendingDeleteRecord || !selectedDonorId) return
+    try {
+      deleteDonationRecord(pendingDeleteRecord.id)
+      setPendingDeleteRecord(null)
+      refreshRecords(selectedDonorId)
+    } catch (err) {
+      if (err instanceof PermissionDeniedError) {
+        toast.error(t.permissionDenied)
+        setPendingDeleteRecord(null)
+      } else {
+        throw err
+      }
+    }
+  }
 
   return (
     <AuthedShell title={t.title}>
-      <div className="mb-4 flex justify-end">
+      <AlertDialog
+        open={pendingDeleteRecord != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteRecord(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogMedia className="bg-destructive/10 text-destructive dark:bg-destructive/20 dark:text-destructive">
+              <Trash2Icon />
+            </AlertDialogMedia>
+            <AlertDialogTitle>{t.deleteTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t.deleteDesc}{" "}
+              {pendingDeleteRecord ? (
+                <span className="font-medium text-foreground">
+                  ({pendingDeleteRecord.donationId})
+                </span>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.cancel}</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={confirmDeleteRecord}>
+              {t.delete}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <div className="mb-4 flex flex-wrap justify-end gap-2">
+        <Link href="/donor/collection">
+          <Button variant="default">{t.goCollection}</Button>
+        </Link>
         <Link href="/inventory">
           <Button variant="outline">{t.viewInventory}</Button>
         </Link>
@@ -249,9 +361,13 @@ export default function Page() {
             <div className="grid gap-3">
               <Label>{t.donorId}</Label>
               <Input
+                ref={donorInputRef}
                 value={donorQuery}
                 onChange={(e) => setDonorQuery(e.target.value)}
+                onKeyDown={handleDonorKeyDown}
                 placeholder={t.donorIdPlaceholder}
+                autoComplete="off"
+                spellCheck={false}
               />
               {donors.length === 0 ? (
                 <div className="text-sm text-muted-foreground">
@@ -311,6 +427,15 @@ export default function Page() {
                 <div className="mt-2">
                   {passedScreening ? (
                     <span className="text-emerald-600">{t.screeningPassed}</span>
+                  ) : screeningExpired ? (
+                    <div className="space-y-2">
+                      <span className="text-amber-600">{t.screeningExpired}</span>
+                      <Link href="/testing-screening">
+                        <Button size="sm" variant="outline">
+                          {t.goScreening}
+                        </Button>
+                      </Link>
+                    </div>
                   ) : (
                     <div className="space-y-2">
                       <span className="text-amber-600">{t.screeningRequired}</span>
@@ -404,6 +529,7 @@ export default function Page() {
               onClick={() => {
                 if (!selectedDonorId || !passedScreening) return
                 try {
+                  const session = readAuthSession()
                   addDonationRecord({
                     donorId: selectedDonorId,
                     donatedAt: new Date(donatedAt),
@@ -411,18 +537,27 @@ export default function Page() {
                     donationType: (donationType as any) ?? null,
                     volumeMl: volumeMl ? Number(volumeMl) : null,
                     location: location.trim(),
-                    collectedBy: collectedBy.trim(),
+                    collectedBy: collectedBy.trim() || session?.displayName || "",
                     adverseReactions: adverseReactions.trim(),
                     note: note.trim() ? note.trim() : undefined,
                     screeningVisitId: passedScreening.id,
+                    requireEid: false,
                   })
                   setNote("")
                   setDonationId(getNextDonationIdPreview())
                   setScreeningTick((n) => n + 1)
                   refreshRecords(selectedDonorId)
                 } catch (err) {
-                  if (err instanceof Error && err.message === "SCREENING_REQUIRED") {
-                    toast.error(t.screeningRequired)
+                  if (err instanceof PermissionDeniedError) {
+                    toast.error(t.permissionDenied)
+                  } else if (err instanceof Error) {
+                    if (err.message === "SCREENING_REQUIRED") {
+                      toast.error(t.screeningRequired)
+                    } else if (err.message === "SCREENING_EXPIRED") {
+                      toast.error(t.screeningExpired)
+                    } else {
+                      toast.error(err.message)
+                    }
                   }
                 }
               }}
@@ -471,15 +606,18 @@ export default function Page() {
                           </div>
                         ) : null}
                       </div>
-                      <Button
-                        variant="destructive"
-                        onClick={() => {
-                          deleteDonationRecord(r.id)
-                          refreshRecords(selectedDonorId)
-                        }}
-                      >
-                        Delete
-                      </Button>
+                      {canDeleteDonations ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          aria-label={t.delete}
+                          onClick={() => setPendingDeleteRecord(r)}
+                        >
+                          <Trash2Icon className="size-4" />
+                        </Button>
+                      ) : null}
                     </div>
                   ))}
               </div>

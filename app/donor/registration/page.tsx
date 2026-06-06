@@ -2,8 +2,8 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
+import { toast } from "sonner"
 
 import { DataTable } from "./data-table"
 import { getColumns } from "./columns"
@@ -50,11 +51,20 @@ import {
   BloodTypeSchema,
   deleteDonors,
   getNextDonorIdPreview,
+  listDonations,
   listDonors,
   resetDonorLocalData,
   upsertDonor,
+  type DonationRecord,
   type Donor,
 } from "@/lib/donor-store"
+import {
+  buildDashboardFacets,
+  buildDashboardRowPredicate,
+  parseDonorListPreset,
+} from "@/lib/donor-dashboard-navigation"
+import { PermissionDeniedError } from "@/lib/permissions"
+import { usePermissions } from "@/hooks/use-permissions"
 import type { RowSelectionState } from "@tanstack/react-table"
 
 const DonorFormSchema = z.object({
@@ -75,9 +85,37 @@ type DonorFormInput = z.input<typeof DonorFormSchema>
 type DonorFormValues = z.output<typeof DonorFormSchema>
 
 export default function Page() {
+  return (
+    <Suspense
+      fallback={
+        <AuthedShell title="Donor Registration">
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-6 w-40" />
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <Skeleton className="h-10 w-full rounded-lg" />
+                <Skeleton className="h-[320px] w-full rounded-md" />
+              </div>
+            </CardContent>
+          </Card>
+        </AuthedShell>
+      }
+    >
+      <DonorRegistrationPageContent />
+    </Suspense>
+  )
+}
+
+function DonorRegistrationPageContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const presetKey = searchParams.toString()
   const { locale } = useLocale()
+  const { canDeleteDonors, canResetData } = usePermissions()
   const [donors, setDonors] = useState<Donor[]>([])
+  const [donations, setDonations] = useState<DonationRecord[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
@@ -87,6 +125,8 @@ export default function Page() {
   const [donorIdPreview, setDonorIdPreview] = useState<string>("")
   const [isDiscardConfirmOpen, setIsDiscardConfirmOpen] = useState(false)
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false)
+  const [filteredDonors, setFilteredDonors] = useState<Donor[]>([])
+  const [, startTransition] = useTransition()
 
   const t = useMemo(() => {
     if (locale === "en") {
@@ -94,6 +134,10 @@ export default function Page() {
         shellTitle: "Donor Registration",
         donorListTitle: "Donor List",
         export: "Export",
+        exportSelected: (count: number) => `Export selected (${count})`,
+        exportFiltered: (count: number) => `Export filtered (${count})`,
+        filteredCount: (count: number) =>
+          `${count} record(s) match current filters.`,
         deleteSelected: "Delete Selected",
         clearSelection: "Clear Selection",
         newDonor: "New Donor",
@@ -142,6 +186,37 @@ export default function Page() {
         noResults: "No results.",
         rows: "Rows",
         clear: "Clear",
+        allFilter: "All",
+        notSet: "Not set",
+        filters: "Filters",
+        groupBy: "Group By",
+        groupByNone: "None",
+        groupCount: (count: number) => `${count} donor(s)`,
+        clearAll: "Clear all",
+        searchPrefix: "Search",
+        groupByPrefix: "Group by",
+        addCustomFilter: "Add custom filter",
+        addCustomGroupBy: "Add custom group",
+        customFilterTitle: "Custom filter",
+        customGroupByTitle: "Custom group by",
+        customField: "Field",
+        customOperator: "Operator",
+        customValue: "Value",
+        customApply: "Apply",
+        customCancel: "Cancel",
+        customSelectField: "Select field",
+        customSelectOperator: "Select operator",
+        customEnterValue: "Enter value",
+        opContains: "contains",
+        opEquals: "is",
+        opNotEquals: "is not",
+        opStartsWith: "starts with",
+        opIsEmpty: "is empty",
+        opIsNotEmpty: "is not empty",
+        opGt: ">",
+        opGte: ">=",
+        opLt: "<",
+        opLte: "<=",
         discardTitle: "Discard changes?",
         discardDesc:
           "You have unsaved changes. Are you sure you want to close this form?",
@@ -151,6 +226,16 @@ export default function Page() {
         resetTitle: "Reset donor data?",
         resetDesc:
           "This will delete all locally saved donors and donations, and restore the default demo donors.",
+        permissionDenied:
+          "You do not have permission to perform this action.",
+        viewTotal: "Total donors",
+        viewEligible: "Eligible now",
+        viewDonations: "With donations in period",
+        viewSoon: "Eligible within 7 days",
+        registeredBetween: (from: string, to: string) =>
+          `Registered: ${from} – ${to}`,
+        donationsBetween: (from: string, to: string) =>
+          `Donations: ${from} – ${to}`,
       } as const
     }
 
@@ -158,6 +243,10 @@ export default function Page() {
       shellTitle: "Donor မှတ်ပုံတင်ခြင်း",
       donorListTitle: "Donor စာရင်း",
       export: "Export",
+      exportSelected: (count: number) => `Export selected (${count})`,
+      exportFiltered: (count: number) => `Export filtered (${count})`,
+      filteredCount: (count: number) =>
+        `filter/group နဲ့ match ဖြစ်တာ ${count} ခု`,
       deleteSelected: "ရွေးထားတာတွေ ဖျက်မယ်",
       clearSelection: "ရွေးထားတာတွေ ဖျက်ပါ",
       newDonor: "Donor အသစ်",
@@ -205,6 +294,37 @@ export default function Page() {
       noResults: "မတွေ့ပါ။",
       rows: "Rows",
       clear: "Clear",
+      allFilter: "အားလုံး",
+      notSet: "မသတ်မှတ်ရသေး",
+      filters: "Filter",
+      groupBy: "Group By",
+      groupByNone: "မရှိ",
+      groupCount: (count: number) => `donor ${count} ဦး`,
+      clearAll: "အားလုံးဖျက်မယ်",
+      searchPrefix: "Search",
+      groupByPrefix: "Group by",
+      addCustomFilter: "Custom filter ထည့်မယ်",
+      addCustomGroupBy: "Custom group ထည့်မယ်",
+      customFilterTitle: "Custom filter",
+      customGroupByTitle: "Custom group by",
+      customField: "Field",
+      customOperator: "Operator",
+      customValue: "Value",
+      customApply: "Apply",
+      customCancel: "Cancel",
+      customSelectField: "Field ရွေးပါ",
+      customSelectOperator: "Operator ရွေးပါ",
+      customEnterValue: "Value ထည့်ပါ",
+      opContains: "contains",
+      opEquals: "is",
+      opNotEquals: "is not",
+      opStartsWith: "starts with",
+      opIsEmpty: "is empty",
+      opIsNotEmpty: "is not empty",
+      opGt: ">",
+      opGte: ">=",
+      opLt: "<",
+      opLte: "<=",
       discardTitle: "ဖြည့်ပြီးသားတွေ ဖျက်မလား?",
       discardDesc:
         "မသိမ်းရသေးတဲ့ အချက်အလက်တွေ ရှိပါတယ်။ တကယ်ပိတ်မှာ သေချာလား?",
@@ -214,6 +334,15 @@ export default function Page() {
       resetTitle: "Data တွေ reset လုပ်မလား?",
       resetDesc:
         "Local ထဲမှာ သိမ်းထားတဲ့ donors/donations အကုန်ဖျက်ပြီး demo donors ကို အသစ်ပြန်ပြပါမယ်။",
+      permissionDenied: "ဒီလုပ်ဆောင်ချက်ကို လုပ်ခွင့် မရှိပါ။",
+      viewTotal: "Donor စုစုပေါင်း",
+      viewEligible: "ယခုလှူနိုင်သူ",
+      viewDonations: "ကာလအတွင်း လှူဒါန်းမှု ရှိ",
+      viewSoon: "၇ ရက်အတွင်း လှူနိုင်မည့်သူ",
+      registeredBetween: (from: string, to: string) =>
+        `မှတ်ပုံတင်သည့်နေ့: ${from} – ${to}`,
+      donationsBetween: (from: string, to: string) =>
+        `လှူဒါန်းမှု: ${from} – ${to}`,
     } as const
   }, [locale])
 
@@ -236,9 +365,68 @@ export default function Page() {
 
   const bloodTypes = useMemo(() => BloodTypeSchema.options, [])
 
+  const dashboardPreset = useMemo(
+    () => parseDonorListPreset(searchParams),
+    [searchParams, presetKey]
+  )
+
+  const dashboardInitialFacets = useMemo(() => {
+    if (!dashboardPreset) return undefined
+    return buildDashboardFacets(dashboardPreset, {
+      viewTotal: t.viewTotal,
+      viewEligible: t.viewEligible,
+      viewDonations: t.viewDonations,
+      viewSoon: t.viewSoon,
+      bloodType: t.bloodType,
+      groupByPrefix: t.groupByPrefix,
+      registeredBetween: t.registeredBetween,
+      donationsBetween: t.donationsBetween,
+      groupFieldLabels: {
+        bloodType: t.bloodType,
+        gender: t.gender,
+        city: t.city,
+        township: t.township,
+      },
+    })
+  }, [dashboardPreset, t])
+
+  const dashboardRowPredicate = useMemo(() => {
+    if (!dashboardPreset) return undefined
+    return buildDashboardRowPredicate(dashboardPreset, donations)
+  }, [dashboardPreset, donations])
+
+  const searchRowText = useCallback(
+    (donor: Donor) =>
+      [
+        donor.donorId,
+        donor.name,
+        donor.nrc,
+        donor.contactPhone,
+        donor.contactEmail,
+        donor.township,
+        donor.city,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    []
+  )
+
+  const handleFilteredRowsChange = useCallback((rows: Donor[]) => {
+    startTransition(() => {
+      setFilteredDonors(rows)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isLoading) {
+      setFilteredDonors(donors)
+    }
+  }, [donors, isLoading])
+
   function refresh() {
     setIsLoading(true)
     setDonors(listDonors())
+    setDonations(listDonations())
     setIsLoading(false)
   }
 
@@ -260,12 +448,21 @@ export default function Page() {
   }
 
   function confirmDelete() {
-    deleteDonors(pendingDeleteIds)
-    setRowSelection({})
-    setIsDeleteConfirmOpen(false)
-    setPendingDeleteIds([])
-    setPendingDeleteLabel("")
-    refresh()
+    try {
+      deleteDonors(pendingDeleteIds)
+      setRowSelection({})
+      setIsDeleteConfirmOpen(false)
+      setPendingDeleteIds([])
+      setPendingDeleteLabel("")
+      refresh()
+    } catch (err) {
+      if (err instanceof PermissionDeniedError) {
+        toast.error(t.permissionDenied)
+        setIsDeleteConfirmOpen(false)
+      } else {
+        throw err
+      }
+    }
   }
 
   function onNew() {
@@ -327,13 +524,141 @@ export default function Page() {
       getColumns({
         onView,
         onEdit,
-        onDelete: (donor) => {
-          requestDelete([donor.id], `${donor.donorId} • ${donor.name}`)
-        },
+        canDelete: canDeleteDonors,
+        onDelete: canDeleteDonors
+          ? (donor) => {
+              requestDelete([donor.id], `${donor.donorId} • ${donor.name}`)
+            }
+          : undefined,
         locale,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [locale]
+    [locale, canDeleteDonors]
+  )
+
+  const filterGroups = useMemo(
+    () => [
+      {
+        id: "bloodType",
+        columnId: "bloodType",
+        label: t.bloodType,
+        options: bloodTypes.map((type) => ({ value: type, label: type })),
+      },
+      {
+        id: "gender",
+        columnId: "gender",
+        label: t.gender,
+        options: [
+          { value: "male", label: t.male },
+          { value: "female", label: t.female },
+          { value: "other", label: t.other },
+          { value: "__empty__", label: t.notSet },
+        ],
+      },
+    ],
+    [bloodTypes, t]
+  )
+
+  const searchFields = useMemo(
+    () => [
+      { id: "donorId", label: t.donorId, getValue: (donor: Donor) => donor.donorId },
+      { id: "name", label: t.name, getValue: (donor: Donor) => donor.name },
+      { id: "nrc", label: t.nrc, getValue: (donor: Donor) => donor.nrc },
+      {
+        id: "contactPhone",
+        label: t.phone,
+        getValue: (donor: Donor) => donor.contactPhone,
+      },
+      {
+        id: "contactEmail",
+        label: t.email,
+        getValue: (donor: Donor) => donor.contactEmail,
+      },
+      { id: "city", label: t.city, getValue: (donor: Donor) => donor.city },
+      {
+        id: "township",
+        label: t.township,
+        getValue: (donor: Donor) => donor.township,
+      },
+    ],
+    [t]
+  )
+
+  const groupByFields = useMemo(
+    () => [
+      { columnId: "bloodType", label: t.bloodType },
+      { columnId: "gender", label: t.gender },
+      { columnId: "city", label: t.city },
+      { columnId: "township", label: t.township },
+    ],
+    [t]
+  )
+
+  const operatorLabels = useMemo(
+    () => ({
+      contains: t.opContains,
+      equals: t.opEquals,
+      notEquals: t.opNotEquals,
+      startsWith: t.opStartsWith,
+      isEmpty: t.opIsEmpty,
+      isNotEmpty: t.opIsNotEmpty,
+      gt: t.opGt,
+      gte: t.opGte,
+      lt: t.opLt,
+      lte: t.opLte,
+    }),
+    [t]
+  )
+
+  const customFilterFields = useMemo(
+    () => [
+      { columnId: "donorId", label: t.donorId, type: "text" as const },
+      { columnId: "name", label: t.name, type: "text" as const },
+      { columnId: "nrc", label: t.nrc, type: "text" as const },
+      { columnId: "age", label: t.age, type: "number" as const },
+      {
+        columnId: "bloodType",
+        label: t.bloodType,
+        type: "enum" as const,
+        enumOptions: bloodTypes.map((type) => ({ value: type, label: type })),
+      },
+      {
+        columnId: "gender",
+        label: t.gender,
+        type: "enum" as const,
+        enumOptions: [
+          { value: "male", label: t.male },
+          { value: "female", label: t.female },
+          { value: "other", label: t.other },
+          { value: "__empty__", label: t.notSet },
+        ],
+      },
+      { columnId: "contactPhone", label: t.phone, type: "text" as const },
+      { columnId: "contactEmail", label: t.email, type: "text" as const },
+      { columnId: "contactAddress", label: t.contactAddress, type: "text" as const },
+      { columnId: "city", label: t.city, type: "text" as const },
+      { columnId: "township", label: t.township, type: "text" as const },
+      { columnId: "address", label: t.fullAddress, type: "text" as const },
+    ],
+    [bloodTypes, t]
+  )
+
+  const customGroupByFields = useMemo(
+    () => [
+      { columnId: "donorId", label: t.donorId },
+      { columnId: "name", label: t.name },
+      { columnId: "nrc", label: t.nrc },
+      { columnId: "age", label: t.age },
+      { columnId: "bloodType", label: t.bloodType },
+      { columnId: "gender", label: t.gender },
+      { columnId: "contactPhone", label: t.phone },
+      { columnId: "contactEmail", label: t.email },
+      { columnId: "contactAddress", label: t.contactAddress },
+      { columnId: "city", label: t.city },
+      { columnId: "township", label: t.township },
+      { columnId: "address", label: t.fullAddress },
+    ],
+    [t]
   )
 
   const selectedIds = useMemo(
@@ -341,14 +666,41 @@ export default function Page() {
     [rowSelection]
   )
 
-  const selectedDonors = useMemo(() => {
-    if (selectedIds.length === 0) return []
-    const byId = new Map(donors.map((d) => [d.id, d] as const))
-    return selectedIds.map((id) => byId.get(id)).filter(Boolean) as Donor[]
-  }, [donors, selectedIds])
+  const filteredDonorIdsKey = useMemo(
+    () => filteredDonors.map((donor) => donor.id).join("\0"),
+    [filteredDonors]
+  )
 
-  function exportSelectedToCsv() {
-    const rows = selectedDonors
+  const isFilteredView = filteredDonors.length !== donors.length
+
+  const exportSelectedDonors = useMemo(() => {
+    if (selectedIds.length === 0) return []
+    const byId = new Map(donors.map((donor) => [donor.id, donor] as const))
+    const filteredIds = new Set(filteredDonors.map((donor) => donor.id))
+    return selectedIds
+      .map((id) => byId.get(id))
+      .filter(
+        (donor): donor is Donor =>
+          !!donor && filteredIds.has(donor.id)
+      )
+  }, [donors, filteredDonors, selectedIds])
+
+  useEffect(() => {
+    if (filteredDonors.length === 0) return
+    const allowedIds = new Set(filteredDonors.map((donor) => donor.id))
+    setRowSelection((previous) => {
+      const nextEntries = Object.entries(previous).filter(
+        ([id, selected]) => selected && allowedIds.has(id)
+      )
+      if (nextEntries.length === Object.keys(previous).filter((k) => previous[k]).length) {
+        return previous
+      }
+      return Object.fromEntries(nextEntries)
+    })
+  }, [filteredDonorIdsKey, filteredDonors.length])
+
+  function exportDonorsToCsv(rows: Donor[]) {
+    if (rows.length === 0) return
     const header = [
       "donorId",
       "name",
@@ -403,16 +755,42 @@ export default function Page() {
     URL.revokeObjectURL(url)
   }
 
+  function handleExport() {
+    if (exportSelectedDonors.length > 0) {
+      exportDonorsToCsv(exportSelectedDonors)
+      return
+    }
+    if (isFilteredView && filteredDonors.length > 0) {
+      exportDonorsToCsv(filteredDonors)
+    }
+  }
+
+  const exportLabel =
+    exportSelectedDonors.length > 0
+      ? t.exportSelected(exportSelectedDonors.length)
+      : isFilteredView
+        ? t.exportFiltered(filteredDonors.length)
+        : t.export
+
   function requestReset() {
     setIsResetConfirmOpen(true)
   }
 
   function confirmReset() {
-    resetDonorLocalData()
-    setRowSelection({})
-    setIsResetConfirmOpen(false)
-    onNew()
-    refresh()
+    try {
+      resetDonorLocalData()
+      setRowSelection({})
+      setIsResetConfirmOpen(false)
+      onNew()
+      refresh()
+    } catch (err) {
+      if (err instanceof PermissionDeniedError) {
+        toast.error(t.permissionDenied)
+        setIsResetConfirmOpen(false)
+      } else {
+        throw err
+      }
+    }
   }
 
   return (
@@ -422,23 +800,32 @@ export default function Page() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
             <CardTitle className="text-base">{t.donorListTitle}</CardTitle>
             <div className="flex w-full items-center gap-2 sm:w-auto">
-              {selectedIds.length > 0 ? (
+              {exportSelectedDonors.length > 0 ? (
                 <>
-                  <Button variant="secondary" onClick={exportSelectedToCsv}>
-                    {t.export} ({selectedIds.length})
+                  <Button variant="secondary" onClick={handleExport}>
+                    {t.exportSelected(exportSelectedDonors.length)}
                   </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={() => {
-                      requestDelete(selectedIds, `${selectedIds.length} donor(s)`)
-                    }}
-                  >
-                    {t.deleteSelected}
-                  </Button>
+                  {canDeleteDonors ? (
+                    <Button
+                      variant="destructive"
+                      onClick={() => {
+                        requestDelete(
+                          exportSelectedDonors.map((donor) => donor.id),
+                          `${exportSelectedDonors.length} donor(s)`
+                        )
+                      }}
+                    >
+                      {t.deleteSelected}
+                    </Button>
+                  ) : null}
                   <Button variant="outline" onClick={() => setRowSelection({})}>
                     {t.clearSelection}
                   </Button>
                 </>
+              ) : isFilteredView && filteredDonors.length > 0 ? (
+                <Button variant="secondary" onClick={handleExport}>
+                  {t.exportFiltered(filteredDonors.length)}
+                </Button>
               ) : null}
               <Button
                 onClick={() => {
@@ -448,9 +835,11 @@ export default function Page() {
               >
                 {t.newDonor}
               </Button>
-              <Button variant="outline" onClick={requestReset}>
-                {t.reset}
-              </Button>
+              {canResetData ? (
+                <Button variant="outline" onClick={requestReset}>
+                  {t.reset}
+                </Button>
+              ) : null}
               <Button variant="secondary" onClick={refresh}>
                 {t.refresh}
               </Button>
@@ -460,11 +849,15 @@ export default function Page() {
         <CardContent>
           {isLoading ? (
             <div className="space-y-4">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <Skeleton className="h-8 w-full sm:max-w-sm" />
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex min-w-0 flex-1 gap-2">
+                  <Skeleton className="h-10 flex-1 rounded-lg" />
+                  <Skeleton className="h-10 w-24 rounded-lg" />
+                  <Skeleton className="h-10 w-28 rounded-lg" />
+                </div>
                 <div className="flex items-center gap-2">
-                  <Skeleton className="h-8 w-[90px]" />
-                  <Skeleton className="h-8 w-[72px]" />
+                  <Skeleton className="h-10 w-24 rounded-lg" />
+                  <Skeleton className="h-10 w-[90px] rounded-lg" />
                 </div>
               </div>
               <div className="rounded-md border p-3">
@@ -490,22 +883,35 @@ export default function Page() {
             <div className="text-sm text-muted-foreground">{t.empty}</div>
           ) : (
             <DataTable
+              key={presetKey || "default"}
               columns={columns}
               data={donors}
+              initialFacets={dashboardInitialFacets}
+              rowPredicate={dashboardRowPredicate}
               searchPlaceholder={t.searchPlaceholder}
-              searchRowText={(d) =>
-                [
-                  d.donorId,
-                  d.name,
-                  d.nrc,
-                  d.contactPhone,
-                  d.contactEmail,
-                  d.township,
-                  d.city,
-                ]
-                  .filter(Boolean)
-                  .join(" ")
-              }
+              searchRowText={searchRowText}
+              filterGroups={filterGroups}
+              groupByFields={groupByFields}
+              customFilterFields={customFilterFields}
+              customGroupByFields={customGroupByFields}
+              searchFields={searchFields}
+              formatGroupValue={(columnId, value) => {
+                if (columnId === "gender") {
+                  if (value === "male") return t.male
+                  if (value === "female") return t.female
+                  if (value === "other") return t.other
+                  return t.notSet
+                }
+                if (columnId === "city" || columnId === "township") {
+                  if (
+                    value == null ||
+                    (typeof value === "string" && !value.trim())
+                  ) {
+                    return t.notSet
+                  }
+                }
+                return String(value ?? t.notSet)
+              }}
               getRowId={(row) => (row as Donor).id}
               getColumnLabel={(id) => {
                 const map =
@@ -540,9 +946,35 @@ export default function Page() {
               }}
               rowSelection={rowSelection}
               onRowSelectionChange={setRowSelection}
+              onFilteredRowsChange={handleFilteredRowsChange}
+              onExport={
+                exportSelectedDonors.length > 0 ||
+                (isFilteredView && filteredDonors.length > 0)
+                  ? handleExport
+                  : undefined
+              }
+              exportLabel={exportLabel}
               labels={{
                 rows: t.rows,
-                clear: t.clear,
+                filters: t.filters,
+                groupBy: t.groupBy,
+                clearAll: t.clearAll,
+                searchPrefix: t.searchPrefix,
+                groupByPrefix: t.groupByPrefix,
+                groupCount: t.groupCount,
+                addCustomFilter: t.addCustomFilter,
+                addCustomGroupBy: t.addCustomGroupBy,
+                customFilterTitle: t.customFilterTitle,
+                customGroupByTitle: t.customGroupByTitle,
+                customField: t.customField,
+                customOperator: t.customOperator,
+                customValue: t.customValue,
+                customApply: t.customApply,
+                customCancel: t.customCancel,
+                customSelectField: t.customSelectField,
+                customSelectOperator: t.customSelectOperator,
+                customEnterValue: t.customEnterValue,
+                operatorLabels,
                 columns: locale === "en" ? "Columns" : "ကော်လံများ",
                 toggleColumns:
                   locale === "en"
@@ -551,6 +983,7 @@ export default function Page() {
                 noResults: t.noResults,
                 showing: t.showing,
                 selected: t.selected,
+                filteredCount: t.filteredCount,
                 selectAllFiltered: (total) =>
                   locale === "en"
                     ? `Select all ${total} rows`

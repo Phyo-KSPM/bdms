@@ -431,7 +431,7 @@ export default function Page() {
             <h1 className="text-xl font-semibold tracking-tight">{t.title}</h1>
             <p className="text-sm text-muted-foreground">{t.subtitle}</p>
           </div>
-          <Link href="/donor/donations">
+          <Link href="/donor/collection">
             <Button variant="outline">{t.goDonations}</Button>
           </Link>
         </div>

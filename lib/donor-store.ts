@@ -1,18 +1,42 @@
-import { addDays, isAfter } from "date-fns"
+import { addDays, isAfter, isSameDay } from "date-fns"
 import { z } from "zod"
+
+import {
+  appendDonorAuditLog,
+  diffDonor,
+} from "@/lib/donor-audit-log"
+import { assertPermission } from "@/lib/permissions"
 
 const DONOR_STORAGE_KEY = "bdms-donors"
 const DONATION_STORAGE_KEY = "bdms-donor-donations"
 const SCREENING_VISIT_STORAGE_KEY = "bdms-screening-visits"
 const HIDDEN_DEMO_DONOR_IDS_KEY = "bdms-hidden-demo-donors-v3"
+const DONOR_AUDIT_LOG_KEY = "bdms-donor-audit-log"
+const DONOR_DATA_VERSION_KEY = "bdms-donor-data-version"
+/** Bump when demo donor shape/count/seed changes to force a one-time local reset. */
+const DONOR_DATA_VERSION = "v6-screening-same-day-20260606"
 const DEMO_MONTHLY_DONOR_COUNTS = [
-  22, 35, 48, 28, 65, 42, 70, 38, 55, 24, 68, 31,
+  22, 35, 48, 28, 65, 42, 70, 38, 55, 24, 45, 31,
 ] as const
-const DEFAULT_DEMO_DONOR_COUNT = DEMO_MONTHLY_DONOR_COUNTS.reduce(
+export const DEMO_DONOR_COUNT = DEMO_MONTHLY_DONOR_COUNTS.reduce(
   (sum, value) => sum + value,
   0
 )
-const DEMO_DATA_SEED = 20260609
+const DEFAULT_DEMO_DONOR_COUNT = DEMO_DONOR_COUNT
+const DEMO_DATA_SEED = 20260606
+
+function demoLastDonationDaysAgo(idx: number): number {
+  return 70 + ((idx * 47 + 13) % 180)
+}
+
+/** Screening and donation happen on the same calendar day (screen AM, donate later). */
+function demoWorkflowDayTimestamp(daysAgo: number, hour: number): string {
+  const day = new Date()
+  day.setHours(0, 0, 0, 0)
+  day.setDate(day.getDate() - daysAgo)
+  day.setHours(hour, 0, 0, 0)
+  return day.toISOString()
+}
 
 function demoWorkflowBounds(total: number) {
   const pendingEnd = Math.floor(total * 0.25)
@@ -138,6 +162,9 @@ export type DonationDetails = z.infer<typeof DonationDetailsSchema>
 export const DonorSchema = z.object({
   id: z.string().min(1),
   donorId: z.string().min(1),
+  eid: z.string().min(1).nullable(),
+  eidIssuedAt: z.string().datetime().nullable(),
+  photoUrl: z.string().nullable(),
   name: z.string().min(1),
   age: z.number().int().min(16).max(80),
   bloodType: BloodTypeSchema,
@@ -320,8 +347,19 @@ function formatDonorId(seq: number) {
   return `DNR-${pad(seq, 6)}`
 }
 
+function formatEid(seq: number) {
+  return `EID-${pad(seq, 8)}`
+}
+
 function parseDonorIdSeq(donorId: string) {
   const match = /^DNR-(\d{1,})$/.exec(donorId)
+  if (!match) return null
+  const seq = Number(match[1])
+  return Number.isFinite(seq) ? seq : null
+}
+
+function parseEidSeq(eid: string) {
+  const match = /^EID-(\d{1,})$/.exec(eid)
   if (!match) return null
   const seq = Number(match[1])
   return Number.isFinite(seq) ? seq : null
@@ -341,6 +379,23 @@ export function getNextDonorIdPreview(): string {
   }, 0)
 
   return formatDonorId(maxSeq + 1)
+}
+
+export function getNextEidPreview(): string {
+  const hiddenDemo = listHiddenDemoDonorIds()
+  const stored = listStoredDonors()
+  const storedIds = new Set(stored.map((d) => d.id))
+  const demo = getAllDemoDonors().filter(
+    (d) => !storedIds.has(d.id) && !hiddenDemo.has(d.id)
+  )
+
+  const maxSeq = [...stored, ...demo].reduce((max, d) => {
+    if (!d.eid) return max
+    const seq = parseEidSeq(d.eid)
+    return seq ? Math.max(max, seq) : max
+  }, 0)
+
+  return formatEid(maxSeq + 1)
 }
 
 function isDemoDonorId(id: string) {
@@ -437,6 +492,43 @@ function defaultDonationDetails(): DonationDetails {
   }
 }
 
+function demoMedicalForIndex(
+  idx: number,
+  bounds: ReturnType<typeof demoWorkflowBounds>,
+  rng: () => number
+): MedicalHistory {
+  if (
+    idx >= bounds.infectiousStart &&
+    idx < bounds.infectiousEnd &&
+    idx % 2 === 0
+  ) {
+    return { ...defaultMedical(), infectiousFlags: ["hepatitis"] }
+  }
+
+  const conditions: string[] = []
+  if (rng() < 0.08) conditions.push("diabetes")
+  if (rng() < 0.06) conditions.push("hypertension")
+  if (rng() < 0.03) conditions.push("heart_disease")
+
+  return {
+    conditions,
+    infectiousFlags: [],
+    medications: conditions.length ? "On maintenance medication" : "",
+    notes: idx % 11 === 0 ? "No known allergies" : "",
+  }
+}
+
+function demoDonationDetailsForIndex(
+  idx: number,
+  rng: () => number
+): DonationDetails {
+  return {
+    donationType: pick(rng, DonationTypeSchema.options),
+    notes:
+      idx % 9 === 0 ? "Regular donor — prefers weekday visits" : "",
+  }
+}
+
 const AUTO_TOWNSHIPS = [
   "Hlaing",
   "Kamayut",
@@ -524,6 +616,9 @@ function normalizeDonor(
   return DonorSchema.parse({
     ...d,
     donorId: donorIdResolved,
+    eid: d.eid ?? null,
+    eidIssuedAt: d.eidIssuedAt ?? null,
+    photoUrl: d.photoUrl ?? null,
     nrc: nrcResolved,
     gender: genderResolved,
     contact: contactResolved,
@@ -669,12 +764,11 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
           ...vitals,
         }
       } else {
+        const daysAgo = demoLastDonationDaysAgo(idx)
         screening = {
           ...defaultScreening(),
           ...vitals,
-          lastDonationDate: new Date(
-            now - (70 + Math.floor(rng() * 180)) * 86400000
-          ).toISOString(),
+          lastDonationDate: demoWorkflowDayTimestamp(daysAgo, 11),
         }
       }
 
@@ -696,12 +790,8 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
           address,
           createdAt,
           screening,
-          medical:
-            idx >= bounds.infectiousStart &&
-            idx < bounds.infectiousEnd &&
-            idx % 2 === 0
-              ? { ...defaultMedical(), infectiousFlags: ["hepatitis"] }
-              : defaultMedical(),
+          medical: demoMedicalForIndex(idx, bounds, rng),
+          donationDetails: demoDonationDetailsForIndex(idx, rng),
         })
       )
       i += 1
@@ -714,7 +804,6 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
 function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
   const rng = mulberry32(DEMO_DATA_SEED + 1)
   const visits: ScreeningVisit[] = []
-  const now = Date.now()
   const bounds = demoWorkflowBounds(donors.length)
 
   for (let i = 0; i < donors.length; i++) {
@@ -729,11 +818,12 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
     }
 
     if (idx < bounds.pendingEnd) {
+      const visitDay = demoWorkflowDayTimestamp(0, 9)
       visits.push(
         normalizeScreeningVisit({
           id: `demo-screening-${pad(idx + 1, 4)}`,
           donorId: donor.id,
-          createdAt: donor.createdAt,
+          createdAt: visitDay,
           vitals: baseVitals,
           status: "pending",
         })
@@ -742,12 +832,14 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
     }
 
     if (idx < bounds.passedEnd) {
+      const daysAgo = Math.floor(rng() * 3)
+      const visitDay = demoWorkflowDayTimestamp(daysAgo, 9)
       visits.push(
         normalizeScreeningVisit({
           id: `demo-screening-${pad(idx + 1, 4)}`,
           donorId: donor.id,
-          createdAt: new Date(now - Math.floor(rng() * 3) * 86400000).toISOString(),
-          screenedAt: new Date(now - Math.floor(rng() * 2) * 86400000).toISOString(),
+          createdAt: visitDay,
+          screenedAt: visitDay,
           vitals: baseVitals,
           tti: demoNegativeTti(),
           status: "passed",
@@ -758,6 +850,8 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
     }
 
     if (idx < bounds.deferredEnd) {
+      const daysAgo = Math.floor(rng() * 5)
+      const visitDay = demoWorkflowDayTimestamp(daysAgo, 9)
       const deferredVitals =
         idx % 2 === 0
           ? demoIneligibleVitals(rng, donor.gender ?? "male")
@@ -770,8 +864,8 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
         normalizeScreeningVisit({
           id: `demo-screening-${pad(idx + 1, 4)}`,
           donorId: donor.id,
-          createdAt: new Date(now - Math.floor(rng() * 5) * 86400000).toISOString(),
-          screenedAt: new Date(now - Math.floor(rng() * 4) * 86400000).toISOString(),
+          createdAt: visitDay,
+          screenedAt: visitDay,
           vitals: deferredVitals,
           tti,
           status: "deferred",
@@ -782,31 +876,21 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
       continue
     }
 
-    const donatedDaysAgo = 70 + Math.floor(rng() * 180)
-    const donatedAt = new Date(now - donatedDaysAgo * 86400000).toISOString()
+    const daysAgo = demoLastDonationDaysAgo(idx)
+    const screeningAt = demoWorkflowDayTimestamp(daysAgo, 9)
     const donationRecordId = `demo-donation-${pad(idx + 1, 4)}`
 
     visits.push(
       normalizeScreeningVisit({
         id: `demo-screening-hist-${pad(idx + 1, 4)}`,
         donorId: donor.id,
-        createdAt: donatedAt,
-        screenedAt: donatedAt,
+        createdAt: screeningAt,
+        screenedAt: screeningAt,
         vitals: baseVitals,
         tti: demoNegativeTti(),
         status: "passed",
         screenedBy: "Demo Lab Tech",
         linkedDonationId: donationRecordId,
-      })
-    )
-
-    visits.push(
-      normalizeScreeningVisit({
-        id: `demo-screening-${pad(idx + 1, 4)}`,
-        donorId: donor.id,
-        createdAt: new Date(now - Math.floor(rng() * 2) * 86400000).toISOString(),
-        vitals: baseVitals,
-        status: "pending",
       })
     )
   }
@@ -848,7 +932,6 @@ function buildDemoDonations(
 ): DonationRecord[] {
   const rng = mulberry32(DEMO_DATA_SEED + 2)
   const records: DonationRecord[] = []
-  const now = Date.now()
 
   const bounds = demoWorkflowBounds(donors.length)
   const visitsById = new Map(visits.map((visit) => [visit.id, visit]))
@@ -858,8 +941,7 @@ function buildDemoDonations(
     const screening = visitsById.get(`demo-screening-hist-${pad(i + 1, 4)}`)
     if (!screening) continue
 
-    const donatedDaysAgo = 70 + Math.floor(rng() * 180)
-    const donatedAt = new Date(now - donatedDaysAgo * 86400000).toISOString()
+    const donatedAt = demoWorkflowDayTimestamp(demoLastDonationDaysAgo(i), 11)
     const outcome = demoBloodBagOutcome(rng)
 
     records.push(
@@ -868,7 +950,8 @@ function buildDemoDonations(
         donationId: `BAG-DEMO-${pad(i + 1, 4)}`,
         donorId: donor.id,
         donatedAt,
-        donationType: "whole_blood",
+        donationType:
+          donor.donationDetails.donationType ?? pick(rng, DonationTypeSchema.options),
         volumeMl: 450,
         location: pick(rng, ["Yangon General Hospital", "Mobile Camp A", "BDMS Center"]),
         vitals: {
@@ -936,6 +1019,7 @@ function listStoredDonors(): Donor[] {
 }
 
 export function listDonors(): Donor[] {
+  ensureDonorDataVersion()
   const stored = listStoredDonors()
   const storedIds = new Set(stored.map((d) => d.id))
   const hiddenDemo = listHiddenDemoDonorIds()
@@ -954,6 +1038,7 @@ export function listDonors(): Donor[] {
 }
 
 export function deleteDonors(ids: string[]) {
+  assertPermission("donors.delete")
   const demoIds = ids.filter((id) => isDemoDonorId(id))
   const storedIds = ids.filter((id) => !isDemoDonorId(id))
   if (demoIds.length) hideDemoDonors(demoIds)
@@ -961,17 +1046,31 @@ export function deleteDonors(ids: string[]) {
 }
 
 export function reseedDemoDonors() {
-  if (typeof window === "undefined") return
-  window.localStorage.removeItem(HIDDEN_DEMO_DONOR_IDS_KEY)
-  invalidateDemoCache()
+  resetDonorLocalData()
 }
 
 export function resetDonorLocalData() {
+  assertPermission("data.reset")
   if (typeof window === "undefined") return
   window.localStorage.removeItem(DONOR_STORAGE_KEY)
   window.localStorage.removeItem(DONATION_STORAGE_KEY)
   window.localStorage.removeItem(SCREENING_VISIT_STORAGE_KEY)
   window.localStorage.removeItem(HIDDEN_DEMO_DONOR_IDS_KEY)
+  window.localStorage.removeItem(DONOR_AUDIT_LOG_KEY)
+  window.localStorage.setItem(DONOR_DATA_VERSION_KEY, DONOR_DATA_VERSION)
+  invalidateDemoCache()
+}
+
+function ensureDonorDataVersion() {
+  if (typeof window === "undefined") return
+  const current = window.localStorage.getItem(DONOR_DATA_VERSION_KEY)
+  if (current === DONOR_DATA_VERSION) return
+  window.localStorage.removeItem(DONOR_STORAGE_KEY)
+  window.localStorage.removeItem(DONATION_STORAGE_KEY)
+  window.localStorage.removeItem(SCREENING_VISIT_STORAGE_KEY)
+  window.localStorage.removeItem(HIDDEN_DEMO_DONOR_IDS_KEY)
+  window.localStorage.removeItem(DONOR_AUDIT_LOG_KEY)
+  window.localStorage.setItem(DONOR_DATA_VERSION_KEY, DONOR_DATA_VERSION)
   invalidateDemoCache()
 }
 
@@ -979,6 +1078,8 @@ export function upsertDonor(
   input: Pick<Donor, "name" | "age" | "bloodType" | "contact"> & {
     id?: string
     donorId?: string
+    eid?: string | null
+    eidIssuedAt?: string | null
     contactPhone?: string
     contactEmail?: string
     contactAddress?: string
@@ -1013,6 +1114,12 @@ export function upsertDonor(
   writeArray(DONOR_STORAGE_KEY, next)
 
   if (!existing) {
+    appendDonorAuditLog({
+      donorId: donor.id,
+      donorCode: donor.donorId,
+      action: "created",
+      summary: `Created donor ${donor.donorId}`,
+    })
     createScreeningVisit(donor.id, {
       vitals: {
         weightKg: donor.screening.weightKg,
@@ -1022,6 +1129,17 @@ export function upsertDonor(
         hb: donor.screening.hb,
       },
     })
+  } else {
+    const changes = diffDonor(existing, donor)
+    if (changes.length > 0) {
+      appendDonorAuditLog({
+        donorId: donor.id,
+        donorCode: donor.donorId,
+        action: "updated",
+        summary: `Updated donor ${donor.donorId}`,
+        changes,
+      })
+    }
   }
 
   return donor
@@ -1031,7 +1149,88 @@ export function getDonorById(id: string): Donor | null {
   return listDonors().find((d) => d.id === id) ?? null
 }
 
+function writeDonorRecord(donor: Donor) {
+  const donors = listStoredDonors()
+  writeArray(DONOR_STORAGE_KEY, [
+    ...donors.filter((d) => d.id !== donor.id),
+    donor,
+  ])
+}
+
+export function setDonorPhoto(id: string, photoUrl: string | null): Donor {
+  assertPermission("donors.write")
+  const existing = getDonorById(id)
+  if (!existing) {
+    throw new Error("DONOR_NOT_FOUND")
+  }
+
+  const donor = normalizeDonor({
+    ...existing,
+    photoUrl: photoUrl?.trim() ? photoUrl : null,
+  })
+  writeDonorRecord(donor)
+
+  appendDonorAuditLog({
+    donorId: donor.id,
+    donorCode: donor.donorId,
+    action: "updated",
+    summary: `Updated photo for donor ${donor.donorId}`,
+    changes: [{ field: "photoUrl", oldValue: "—", newValue: "Updated" }],
+  })
+
+  return donor
+}
+
+export function issueDonorEid(
+  id: string,
+  options?: { photoUrl?: string | null }
+): Donor {
+  assertPermission("donors.write")
+  const existing = getDonorById(id)
+  if (!existing) {
+    throw new Error("DONOR_NOT_FOUND")
+  }
+  if (existing.eid) return existing
+
+  const photoUrl = options?.photoUrl ?? existing.photoUrl
+  if (!photoUrl?.trim()) {
+    throw new Error("PHOTO_REQUIRED")
+  }
+
+  const eid = getNextEidPreview()
+  const now = new Date().toISOString()
+  const donor = normalizeDonor({
+    ...existing,
+    eid,
+    eidIssuedAt: now,
+    photoUrl,
+  })
+
+  writeDonorRecord(donor)
+
+  appendDonorAuditLog({
+    donorId: donor.id,
+    donorCode: donor.donorId,
+    action: "updated",
+    summary: `Issued EID ${eid} for donor ${donor.donorId}`,
+    changes: [{ field: "eid", oldValue: "—", newValue: eid }],
+  })
+
+  return donor
+}
+
 export function deleteDonor(id: string) {
+  assertPermission("donors.delete")
+  const existing = getDonorById(id)
+  if (existing) {
+    appendDonorAuditLog({
+      donorId: existing.id,
+      donorCode: existing.donorId,
+      action: "deleted",
+      summary: `Deleted donor ${existing.donorId}`,
+    })
+  }
+
   const donors = listStoredDonors()
   writeArray(
     DONOR_STORAGE_KEY,
@@ -1119,6 +1318,12 @@ export function listDonationsByDonor(donorId: string): DonationRecord[] {
   return listDonations().filter((r) => r.donorId === donorId)
 }
 
+export function listScreeningVisitsByDonor(donorId: string): ScreeningVisit[] {
+  return listScreeningVisits()
+    .filter((visit) => visit.donorId === donorId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
 export function getLastDonation(donorId: string): DonationRecord | null {
   const records = listDonationsByDonor(donorId)
   if (records.length === 0) return null
@@ -1139,6 +1344,85 @@ export function canDonateNow(donorId: string, now: Date = new Date()) {
   return !isAfter(next, now)
 }
 
+export type DonationCollectionBlocker =
+  | "DONOR_NOT_FOUND"
+  | "EID_REQUIRED"
+  | "COOLDOWN_ACTIVE"
+  | "SCREENING_REQUIRED"
+  | "SCREENING_EXPIRED"
+  | "PREVIEW_EID"
+
+export type DonationCollectionAssessment = {
+  ready: boolean
+  donor: Donor | null
+  screening: ScreeningVisit | null
+  donationCount: number
+  blockers: DonationCollectionBlocker[]
+}
+
+export function assessDonationCollection(
+  donorId: string,
+  options?: { referenceDate?: Date }
+): DonationCollectionAssessment {
+  const referenceDate = options?.referenceDate ?? new Date()
+  const donor = getDonorById(donorId)
+  const blockers: DonationCollectionBlocker[] = []
+
+  if (!donor) {
+    return {
+      ready: false,
+      donor: null,
+      screening: null,
+      donationCount: 0,
+      blockers: ["DONOR_NOT_FOUND"],
+    }
+  }
+
+  const donationCount = listDonationsByDonor(donor.id).length
+
+  if (!donor.eid?.trim()) {
+    blockers.push("EID_REQUIRED")
+  }
+
+  if (!canDonateNow(donor.id, referenceDate)) {
+    blockers.push("COOLDOWN_ACTIVE")
+  }
+
+  const anyPassed = listScreeningVisits().find(
+    (v) =>
+      v.donorId === donor.id &&
+      v.status === "passed" &&
+      v.linkedDonationId == null
+  )
+
+  const screening = getPassedScreeningForDonor(donor.id, {
+    sameDayOnly: true,
+    referenceDate,
+  })
+
+  if (!anyPassed) {
+    blockers.push("SCREENING_REQUIRED")
+  } else if (!screening) {
+    blockers.push("SCREENING_EXPIRED")
+  }
+
+  return {
+    ready: blockers.length === 0,
+    donor,
+    screening,
+    donationCount,
+    blockers,
+  }
+}
+
+export function isDonationIdTaken(donationId: string): boolean {
+  const normalized = donationId.trim().toLowerCase()
+  if (!normalized) return false
+  return listDonations().some(
+    (r) => r.donationId.trim().toLowerCase() === normalized
+  )
+}
+
 export function addDonationRecord(input: {
   donorId: string
   donatedAt: Date
@@ -1154,13 +1438,44 @@ export function addDonationRecord(input: {
   adverseReactions?: string
   note?: string
   screeningVisitId?: string
+  requireEid?: boolean
 }): DonationRecord {
-  const screening = getPassedScreeningForDonor(input.donorId)
+  assertPermission("donations.write")
+
+  const donor = getDonorById(input.donorId)
+  if (!donor) {
+    throw new Error("DONOR_NOT_FOUND")
+  }
+
+  const requireEid = input.requireEid ?? true
+  if (requireEid && !donor.eid?.trim()) {
+    throw new Error("EID_REQUIRED")
+  }
+
+  if (!canDonateNow(input.donorId, input.donatedAt)) {
+    throw new Error("COOLDOWN_ACTIVE")
+  }
+
+  const screening = getPassedScreeningForDonor(input.donorId, {
+    sameDayOnly: true,
+    referenceDate: input.donatedAt,
+  })
   if (!screening) {
-    throw new Error("SCREENING_REQUIRED")
+    const hasPassed = listScreeningVisits().some(
+      (v) =>
+        v.donorId === input.donorId &&
+        v.status === "passed" &&
+        v.linkedDonationId == null
+    )
+    throw new Error(hasPassed ? "SCREENING_EXPIRED" : "SCREENING_REQUIRED")
   }
   if (input.screeningVisitId && input.screeningVisitId !== screening.id) {
     throw new Error("SCREENING_MISMATCH")
+  }
+
+  const bagId = input.donationId?.trim()
+  if (bagId && isDonationIdTaken(bagId)) {
+    throw new Error("DONATION_ID_DUPLICATE")
   }
 
   const tti = { ...screening.tti, ...(input.tti ?? {}) }
@@ -1193,6 +1508,15 @@ export function addDonationRecord(input: {
   writeArray(DONATION_STORAGE_KEY, [...all, record])
   cachedListDonations = null
   persistScreeningLink(screening, record.id)
+
+  const donationCount = listDonationsByDonor(donor.id).length
+  appendDonorAuditLog({
+    donorId: donor.id,
+    donorCode: donor.donorId,
+    action: "updated",
+    summary: `Blood collection recorded (${record.donationId}) — donation #${donationCount}`,
+  })
+
   return record
 }
 
@@ -1208,6 +1532,7 @@ export function getNextDonationIdPreview(): string {
 }
 
 export function deleteDonationRecord(id: string) {
+  assertPermission("donations.delete")
   if (isDemoDonationId(id)) return
 
   const records = listStoredDonations()
@@ -1371,16 +1696,28 @@ export function ensureScreeningVisit(donorId: string): ScreeningVisit {
 
 /** Passed screening not yet linked to a donation record. */
 export function getPassedScreeningForDonor(
-  donorId: string
+  donorId: string,
+  options?: { sameDayOnly?: boolean; referenceDate?: Date }
 ): ScreeningVisit | null {
-  return (
+  const visit =
     listScreeningVisits().find(
       (v) =>
         v.donorId === donorId &&
         v.status === "passed" &&
         v.linkedDonationId == null
     ) ?? null
-  )
+
+  if (!visit) return null
+
+  if (options?.sameDayOnly) {
+    const referenceDate = options.referenceDate ?? new Date()
+    const screenedAt = visit.screenedAt ? new Date(visit.screenedAt) : null
+    if (!screenedAt || !isSameDay(screenedAt, referenceDate)) {
+      return null
+    }
+  }
+
+  return visit
 }
 
 export function evaluateVitalsEligibility(

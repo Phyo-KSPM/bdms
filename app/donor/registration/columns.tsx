@@ -21,17 +21,20 @@ export function getColumns({
   onView,
   onEdit,
   onDelete,
+  canDelete = false,
   locale,
 }: {
   onView: (donor: Donor) => void
   onEdit: (donor: Donor) => void
-  onDelete: (donor: Donor) => void
+  onDelete?: (donor: Donor) => void
+  canDelete?: boolean
   locale: Locale
 }): ColumnDef<Donor>[] {
   const t =
     locale === "en"
       ? {
           donorId: "Donor ID",
+          eid: "EID",
           name: "Name",
           nrc: "NRC",
           age: "Age",
@@ -48,9 +51,14 @@ export function getColumns({
           del: "Delete",
           selectAll: "Select all",
           selectRow: "Select row",
+          male: "Male",
+          female: "Female",
+          other: "Other",
+          unset: "Not set",
         }
       : {
           donorId: "Donor ID",
+          eid: "EID",
           name: "အမည်",
           nrc: "NRC",
           age: "အသက်",
@@ -67,7 +75,33 @@ export function getColumns({
           del: "ဖျက်မယ်",
           selectAll: "အားလုံးရွေး",
           selectRow: "ရွေး",
+          male: "ကျား",
+          female: "မ",
+          other: "အခြား",
+          unset: "မသတ်မှတ်ရသေး",
         }
+
+  function normalizeFilterValue(value: unknown) {
+    if (value == null) return "__empty__"
+    if (typeof value === "string" && !value.trim()) return "__empty__"
+    return String(value)
+  }
+
+  function exactFilterFn(
+    row: { getValue: (id: string) => unknown },
+    columnId: string,
+    filterValue: unknown
+  ) {
+    if (!filterValue || filterValue === "all") return true
+    return normalizeFilterValue(row.getValue(columnId)) === filterValue
+  }
+
+  function formatGender(value: unknown) {
+    if (value === "male") return t.male
+    if (value === "female") return t.female
+    if (value === "other") return t.other
+    return t.unset
+  }
 
   return [
     {
@@ -103,6 +137,7 @@ export function getColumns({
           <ArrowUpDownIcon className="ml-2" />
         </Button>
       ),
+      enableGrouping: true,
       cell: ({ row }) => {
         const donor = row.original
         return (
@@ -117,6 +152,19 @@ export function getColumns({
       },
     },
     {
+      accessorKey: "eid",
+      header: t.eid,
+      enableGrouping: true,
+      cell: ({ row }) => {
+        const value = row.getValue("eid") as string | null
+        return (
+          <div className="font-mono text-xs">
+            {value ?? "—"}
+          </div>
+        )
+      },
+    },
+    {
       accessorKey: "name",
       header: ({ column }) => (
         <Button
@@ -127,6 +175,7 @@ export function getColumns({
           <ArrowUpDownIcon className="ml-2" />
         </Button>
       ),
+      enableGrouping: true,
       cell: ({ row }) => {
         const donor = row.original
         return (
@@ -143,6 +192,7 @@ export function getColumns({
     {
       accessorKey: "nrc",
       header: t.nrc,
+      enableGrouping: true,
       cell: ({ row }) => (
         <div className="max-w-[160px] truncate">{row.getValue("nrc")}</div>
       ),
@@ -158,6 +208,7 @@ export function getColumns({
           <ArrowUpDownIcon className="ml-2" />
         </Button>
       ),
+      enableGrouping: true,
     },
     {
       accessorKey: "bloodType",
@@ -170,17 +221,26 @@ export function getColumns({
           <ArrowUpDownIcon className="ml-2" />
         </Button>
       ),
+      enableGrouping: true,
+      filterFn: (row, columnId, filterValue) =>
+        exactFilterFn(row, columnId, filterValue),
     },
     {
       accessorKey: "gender",
       header: t.gender,
       cell: ({ row }) => (
-        <div className="max-w-[120px] truncate">{row.getValue("gender")}</div>
+        <div className="max-w-[120px] truncate">
+          {formatGender(row.getValue("gender"))}
+        </div>
       ),
+      enableGrouping: true,
+      filterFn: (row, columnId, filterValue) =>
+        exactFilterFn(row, columnId, filterValue),
     },
     {
       accessorKey: "contactPhone",
       header: t.phone,
+      enableGrouping: true,
       cell: ({ row }) => (
         <div className="max-w-[160px] truncate">{row.getValue("contactPhone")}</div>
       ),
@@ -188,6 +248,7 @@ export function getColumns({
     {
       accessorKey: "contactEmail",
       header: t.email,
+      enableGrouping: true,
       cell: ({ row }) => (
         <div className="max-w-[220px] truncate">{row.getValue("contactEmail")}</div>
       ),
@@ -195,20 +256,37 @@ export function getColumns({
     {
       accessorKey: "township",
       header: t.township,
-      cell: ({ row }) => (
-        <div className="max-w-[140px] truncate">{row.getValue("township")}</div>
-      ),
+      cell: ({ row }) => {
+        const value = row.getValue("township")
+        return (
+          <div className="max-w-[140px] truncate">
+            {typeof value === "string" && value.trim() ? value : t.unset}
+          </div>
+        )
+      },
+      enableGrouping: true,
+      filterFn: (row, columnId, filterValue) =>
+        exactFilterFn(row, columnId, filterValue),
     },
     {
       accessorKey: "city",
       header: t.city,
-      cell: ({ row }) => (
-        <div className="max-w-[140px] truncate">{row.getValue("city")}</div>
-      ),
+      cell: ({ row }) => {
+        const value = row.getValue("city")
+        return (
+          <div className="max-w-[140px] truncate">
+            {typeof value === "string" && value.trim() ? value : t.unset}
+          </div>
+        )
+      },
+      enableGrouping: true,
+      filterFn: (row, columnId, filterValue) =>
+        exactFilterFn(row, columnId, filterValue),
     },
     {
       accessorKey: "address",
       header: t.address,
+      enableGrouping: true,
       cell: ({ row }) => (
         <div className="max-w-[260px] truncate">{row.getValue("address")}</div>
       ),
@@ -246,12 +324,14 @@ export function getColumns({
                 <DropdownMenuItem onClick={() => onEdit(donor)}>
                   {t.edit}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => onDelete(donor)}
-                >
-                  {t.del}
-                </DropdownMenuItem>
+                {canDelete && onDelete ? (
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => onDelete(donor)}
+                  >
+                    {t.del}
+                  </DropdownMenuItem>
+                ) : null}
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>

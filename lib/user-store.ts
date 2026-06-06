@@ -10,13 +10,16 @@ export const PermissionSchema = z.enum([
   "dashboard.read",
   "donors.read",
   "donors.write",
+  "donors.delete",
   "screening.read",
   "screening.write",
   "donations.read",
   "donations.write",
+  "donations.delete",
   "inventory.read",
   "inventory.write",
   "reports.read",
+  "data.reset",
 ])
 
 export type Permission = z.infer<typeof PermissionSchema>
@@ -84,6 +87,7 @@ export const PERMISSION_LABELS: Record<Permission, { en: string; mm: string }> =
     "dashboard.read": { en: "View dashboard", mm: "Dashboard ကြည့်ရှု" },
     "donors.read": { en: "View donors", mm: "Donor များ ကြည့်ရှု" },
     "donors.write": { en: "Manage donors", mm: "Donor များ စီမံခန့်ခွဲ" },
+    "donors.delete": { en: "Delete donors", mm: "Donor များ ဖျက်ရန်" },
     "screening.read": {
       en: "View screening",
       mm: "စစ်ဆေးမှု ကြည့်ရှု",
@@ -100,9 +104,17 @@ export const PERMISSION_LABELS: Record<Permission, { en: string; mm: string }> =
       en: "Manage donations",
       mm: "လှူဒါန်းမှု စီမံခန့်ခွဲ",
     },
+    "donations.delete": {
+      en: "Delete donation records",
+      mm: "လှူဒါန်းမှတ်တမ်း ဖျက်ရန်",
+    },
     "inventory.read": { en: "View inventory", mm: "စတော့ ကြည့်ရှု" },
     "inventory.write": { en: "Manage inventory", mm: "စတော့ စီမံခန့်ခွဲ" },
     "reports.read": { en: "View reports", mm: "အစီရင်ခံစာ ကြည့်ရှု" },
+    "data.reset": {
+      en: "Reset demo/local data",
+      mm: "Demo/local data reset",
+    },
   }
 
 function buildDefaultRoles(): RoleDefinition[] {
@@ -122,6 +134,7 @@ function buildDefaultRoles(): RoleDefinition[] {
         "dashboard.read",
         "donors.read",
         "donors.write",
+        "donors.delete",
         "donations.read",
       ],
     },
@@ -145,6 +158,7 @@ function buildDefaultRoles(): RoleDefinition[] {
         "donors.read",
         "donations.read",
         "donations.write",
+        "donations.delete",
       ],
     },
     {
@@ -231,6 +245,32 @@ function normalizeRolePermissions(
   return { ...role, permissions: unique }
 }
 
+function mergeMissingDefaultRolePermissions(
+  roles: RoleDefinition[]
+): RoleDefinition[] {
+  const defaultById = new Map(
+    buildDefaultRoles().map((role) => [role.id, role.permissions])
+  )
+  let changed = false
+  const merged = roles.map((role) => {
+    const defaultPermissions = defaultById.get(role.id)
+    if (!defaultPermissions) return role
+    const missing = defaultPermissions.filter(
+      (permission) => !role.permissions.includes(permission)
+    )
+    if (missing.length === 0) return role
+    changed = true
+    return normalizeRolePermissions({
+      ...role,
+      permissions: [...role.permissions, ...missing],
+    })
+  })
+  if (changed) {
+    writeRoles(merged)
+  }
+  return merged
+}
+
 function mergeMissingDefaultRoles(roles: RoleDefinition[]): RoleDefinition[] {
   const defaults = buildDefaultRoles()
   const existingIds = new Set(roles.map((role) => role.id))
@@ -297,7 +337,7 @@ function readRoles(): RoleDefinition[] {
       parsed.length > 0
         ? parsed.map(normalizeRolePermissions)
         : buildDefaultRoles()
-    return mergeMissingDefaultRoles(roles)
+    return mergeMissingDefaultRolePermissions(mergeMissingDefaultRoles(roles))
   } catch {
     const seed = buildDefaultRoles()
     writeRoles(seed)
