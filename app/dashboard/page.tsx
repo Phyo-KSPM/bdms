@@ -31,6 +31,7 @@ import {
 import { AuthedShell } from "@/components/authed-shell"
 import { useLocale } from "@/components/i18n/locale-provider"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -39,6 +40,13 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -56,6 +64,7 @@ import {
 import {
   listDonations,
   listDonors,
+  BloodTypeSchema,
   type Donor,
   type DonationRecord,
 } from "@/lib/donor-store"
@@ -64,13 +73,14 @@ import {
   formatChartPeriodDescription,
   formatChartTick,
   getDefaultChartRange,
+  getLastNDaysRange,
   isWithinChartRange,
   NewDonorsChartPicker,
   normalizeChartRange,
   type ChartViewMode,
 } from "@/components/new-donors-chart-picker"
 
-const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] as const
+const BLOOD_TYPES = BloodTypeSchema.options
 
 const DONOR_GENDER_COLORS = {
   male: "oklch(0.52 0.11 254)",
@@ -99,6 +109,14 @@ export default function Page() {
         startDate: "Start date",
         endDate: "End date",
         clear: "Clear",
+        quickPresets: "Quick presets",
+        last3Days: "Last 3 days",
+        last7Days: "Last 7 days",
+        last30Days: "Last 30 days",
+        last12Months: "Last 12 months",
+        bloodType: "Blood type",
+        allBloodTypes: "All blood types",
+        filters: "Filters",
         male: "Male",
         female: "Female",
         bloodTypeTitle: "Blood type distribution",
@@ -141,6 +159,14 @@ export default function Page() {
       startDate: "စတင်ရက်",
       endDate: "ပြီးဆုံးရက်",
       clear: "ရှင်းမည်",
+      quickPresets: "အမြန်ရွေးချယ်မှု",
+      last3Days: "နောက်ဆုံး ၃ ရက်",
+      last7Days: "နောက်ဆုံး ၇ ရက်",
+      last30Days: "နောက်ဆုံး ၃၀ ရက်",
+      last12Months: "နောက်ဆုံး ၁၂ လ",
+      bloodType: "သွေးအမျိုးအစား",
+      allBloodTypes: "သွေးအုပ်စု အားလုံး",
+      filters: "Filter",
       male: "ကျား",
       female: "မ",
       bloodTypeTitle: "သွေးအုပ်စု ခွဲခြားမှု",
@@ -178,6 +204,7 @@ export default function Page() {
   const [chartEndDate, setChartEndDate] = useState(
     () => getDefaultChartRange().end
   )
+  const [bloodTypeFilter, setBloodTypeFilter] = useState("all")
   const [chartSeries, setChartSeries] = useState({
     male: true,
     female: true,
@@ -198,7 +225,7 @@ export default function Page() {
     [chartStartDate, chartEndDate]
   )
 
-  const filteredDonors = useMemo(
+  const dateFilteredDonors = useMemo(
     () =>
       donors.filter((donor) =>
         isWithinChartRange(donor.createdAt, filterRange.start, filterRange.end)
@@ -206,13 +233,32 @@ export default function Page() {
     [donors, filterRange]
   )
 
-  const filteredDonations = useMemo(
+  const filteredDonors = useMemo(() => {
+    if (bloodTypeFilter === "all") return dateFilteredDonors
+    return dateFilteredDonors.filter(
+      (donor) => donor.bloodType === bloodTypeFilter
+    )
+  }, [dateFilteredDonors, bloodTypeFilter])
+
+  const dateFilteredDonations = useMemo(
     () =>
       donations.filter((record) =>
         isWithinChartRange(record.donatedAt, filterRange.start, filterRange.end)
       ),
     [donations, filterRange]
   )
+
+  const filteredDonations = useMemo(() => {
+    if (bloodTypeFilter === "all") return dateFilteredDonations
+    const donorIds = new Set(
+      donors
+        .filter((donor) => donor.bloodType === bloodTypeFilter)
+        .map((donor) => donor.id)
+    )
+    return dateFilteredDonations.filter((record) =>
+      donorIds.has(record.donorId)
+    )
+  }, [dateFilteredDonations, bloodTypeFilter, donors])
 
   const lastDonationByDonor = useMemo(() => {
     const map = new Map<string, DonationRecord>()
@@ -259,9 +305,13 @@ export default function Page() {
     const prevEnd = subDays(filterRange.start, 1)
     const prevStart = subDays(prevEnd, periodDays - 1)
     const currentPeriod = filteredDonors.length
-    const previousPeriod = donors.filter((donor) =>
-      isWithinChartRange(donor.createdAt, prevStart, prevEnd)
-    ).length
+    const previousPeriod = donors.filter((donor) => {
+      if (!isWithinChartRange(donor.createdAt, prevStart, prevEnd)) return false
+      if (bloodTypeFilter !== "all" && donor.bloodType !== bloodTypeFilter) {
+        return false
+      }
+      return true
+    }).length
     const trend =
       previousPeriod === 0
         ? currentPeriod > 0
@@ -279,6 +329,7 @@ export default function Page() {
     filteredDonations,
     donors,
     filterRange,
+    bloodTypeFilter,
     nowMs,
     lastDonationByDonor,
     isDonorEligible,
@@ -312,12 +363,12 @@ export default function Page() {
   const filteredChartData = useMemo(
     () =>
       buildNewDonorsChartData(
-        donors,
+        filteredDonors,
         chartViewMode,
         chartStartDate,
         chartEndDate
       ),
-    [donors, chartViewMode, chartStartDate, chartEndDate]
+    [filteredDonors, chartViewMode, chartStartDate, chartEndDate]
   )
 
   const chartStackId =
@@ -332,6 +383,22 @@ export default function Page() {
       if (!next.male && !next.female) return prev
       return next
     })
+  }
+
+  function applyDatePreset(days: number | "default", mode: ChartViewMode) {
+    const range =
+      days === "default" ? getDefaultChartRange() : getLastNDaysRange(days)
+    setChartViewMode(mode)
+    setChartStartDate(range.start)
+    setChartEndDate(range.end)
+  }
+
+  function clearDashboardFilters() {
+    const { start, end } = getDefaultChartRange()
+    setChartViewMode("month")
+    setChartStartDate(start)
+    setChartEndDate(end)
+    setBloodTypeFilter("all")
   }
 
   const chartConfig = useMemo<ChartConfig>(
@@ -562,31 +629,106 @@ export default function Page() {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0">
               <h1 className="text-xl font-semibold tracking-tight">{t.title}</h1>
               <p className="text-sm text-muted-foreground">{t.subtitle}</p>
             </div>
-            <NewDonorsChartPicker
-              locale={locale}
-              viewMode={chartViewMode}
-              startDate={chartStartDate}
-              endDate={chartEndDate}
-              onViewModeChange={setChartViewMode}
-              onRangeChange={(start, end) => {
-                const normalized = normalizeChartRange(start, end)
-                setChartStartDate(normalized.start)
-                setChartEndDate(normalized.end)
-              }}
-              labels={{
-                viewDay: t.viewDay,
-                viewWeek: t.viewWeek,
-                viewMonth: t.viewMonth,
-                startDate: t.startDate,
-                endDate: t.endDate,
-                clear: t.clear,
-              }}
-            />
+            <div className="flex max-w-full flex-nowrap items-center justify-end gap-1.5 overflow-x-auto pb-0.5 xl:shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 rounded-full px-3 text-xs"
+                onClick={() => applyDatePreset(3, "day")}
+              >
+                {t.last3Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 rounded-full px-3 text-xs"
+                onClick={() => applyDatePreset(7, "day")}
+              >
+                {t.last7Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 rounded-full px-3 text-xs"
+                onClick={() => applyDatePreset(30, "day")}
+              >
+                {t.last30Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 rounded-full px-3 text-xs"
+                onClick={() => applyDatePreset("default", "month")}
+              >
+                {t.last12Months}
+              </Button>
+              <Select
+                value={bloodTypeFilter}
+                onValueChange={(value) => {
+                  if (value) setBloodTypeFilter(value)
+                }}
+              >
+                <SelectTrigger className="h-8 w-auto min-w-[72px] shrink-0 rounded-full px-3 text-xs">
+                  <SelectValue placeholder={t.allBloodTypes} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t.allBloodTypes}</SelectItem>
+                  {BLOOD_TYPES.map((type) => (
+                    <SelectItem key={type} value={type}>
+                      {type}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <NewDonorsChartPicker
+                locale={locale}
+                viewMode={chartViewMode}
+                startDate={chartStartDate}
+                endDate={chartEndDate}
+                bloodTypeFilter={bloodTypeFilter}
+                bloodTypes={BLOOD_TYPES}
+                onViewModeChange={setChartViewMode}
+                onRangeChange={(start, end) => {
+                  const normalized = normalizeChartRange(start, end)
+                  setChartStartDate(normalized.start)
+                  setChartEndDate(normalized.end)
+                }}
+                onBloodTypeChange={setBloodTypeFilter}
+                labels={{
+                  viewDay: t.viewDay,
+                  viewWeek: t.viewWeek,
+                  viewMonth: t.viewMonth,
+                  startDate: t.startDate,
+                  endDate: t.endDate,
+                  clear: t.clear,
+                  quickPresets: t.quickPresets,
+                  last3Days: t.last3Days,
+                  last7Days: t.last7Days,
+                  last30Days: t.last30Days,
+                  last12Months: t.last12Months,
+                  bloodType: t.bloodType,
+                  allBloodTypes: t.allBloodTypes,
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 shrink-0 px-2 text-xs"
+                onClick={clearDashboardFilters}
+              >
+                {t.clear}
+              </Button>
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

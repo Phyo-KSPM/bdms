@@ -12,6 +12,7 @@ import {
   startOfDay,
   startOfMonth,
   startOfWeek,
+  subDays,
 } from "date-fns"
 import { CalendarIcon } from "lucide-react"
 
@@ -19,6 +20,13 @@ import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Popover,
   PopoverContent,
@@ -46,6 +54,12 @@ function localeCode(locale: string) {
 export function getDefaultChartRange() {
   const end = startOfDay(new Date())
   const start = startOfMonth(addMonths(end, -(DEFAULT_MONTHS - 1)))
+  return { start, end }
+}
+
+export function getLastNDaysRange(days: number) {
+  const end = startOfDay(new Date())
+  const start = subDays(end, days - 1)
   return { start, end }
 }
 
@@ -272,8 +286,11 @@ type NewDonorsChartPickerProps = {
   viewMode: ChartViewMode
   startDate: Date
   endDate: Date
+  bloodTypeFilter: string
+  bloodTypes: readonly string[]
   onViewModeChange: (mode: ChartViewMode) => void
   onRangeChange: (start: Date, end: Date) => void
+  onBloodTypeChange: (value: string) => void
   labels: {
     viewDay: string
     viewWeek: string
@@ -281,6 +298,13 @@ type NewDonorsChartPickerProps = {
     startDate: string
     endDate: string
     clear: string
+    quickPresets: string
+    last3Days: string
+    last7Days: string
+    last30Days: string
+    last12Months: string
+    bloodType: string
+    allBloodTypes: string
   }
 }
 
@@ -289,16 +313,31 @@ export function NewDonorsChartPicker({
   viewMode,
   startDate,
   endDate,
+  bloodTypeFilter,
+  bloodTypes,
   onViewModeChange,
   onRangeChange,
+  onBloodTypeChange,
   labels,
 }: NewDonorsChartPickerProps) {
-  const triggerLabel = formatDateRangeLabel(startDate, endDate, locale, "short")
+  const dateLabel = formatDateRangeLabel(startDate, endDate, locale, "short")
+  const triggerLabel =
+    bloodTypeFilter === "all"
+      ? dateLabel
+      : `${dateLabel} · ${bloodTypeFilter}`
+
+  function applyPreset(days: number | "default", mode: ChartViewMode) {
+    const range =
+      days === "default" ? getDefaultChartRange() : getLastNDaysRange(days)
+    onViewModeChange(mode)
+    onRangeChange(range.start, range.end)
+  }
 
   function handleClear() {
     const { start, end } = getDefaultChartRange()
     onViewModeChange("month")
     onRangeChange(start, end)
+    onBloodTypeChange("all")
   }
 
   return (
@@ -307,15 +346,55 @@ export function NewDonorsChartPicker({
         render={
           <Button
             variant="outline"
-            className="w-full justify-start gap-2 font-normal sm:w-[260px]"
+            size="sm"
+            className="h-8 shrink-0 justify-start gap-1.5 rounded-full px-3 text-xs font-normal"
           />
         }
       >
-        <CalendarIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate">{triggerLabel}</span>
+        <CalendarIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="max-w-[180px] truncate whitespace-nowrap">{triggerLabel}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-auto p-0">
+      <PopoverContent align="end" className="w-auto max-w-[720px] p-0">
         <div className="space-y-3 border-b p-3">
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">
+              {labels.quickPresets}
+            </Label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => applyPreset(3, "day")}
+              >
+                {labels.last3Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => applyPreset(7, "day")}
+              >
+                {labels.last7Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => applyPreset(30, "day")}
+              >
+                {labels.last30Days}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => applyPreset("default", "month")}
+              >
+                {labels.last12Months}
+              </Button>
+            </div>
+          </div>
           <Tabs
             value={viewMode}
             onValueChange={(value) => {
@@ -355,6 +434,27 @@ export function NewDonorsChartPicker({
                 }}
               />
             </div>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="chart-blood-type">{labels.bloodType}</Label>
+            <Select
+              value={bloodTypeFilter}
+              onValueChange={(value) => {
+                if (value) onBloodTypeChange(value)
+              }}
+            >
+              <SelectTrigger id="chart-blood-type" className="w-full">
+                <SelectValue placeholder={labels.allBloodTypes} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{labels.allBloodTypes}</SelectItem>
+                {bloodTypes.map((type) => (
+                  <SelectItem key={type} value={type}>
+                    {type}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex justify-end">
             <Button type="button" variant="ghost" size="sm" onClick={handleClear}>
