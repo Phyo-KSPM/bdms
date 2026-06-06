@@ -3,7 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { isAfter } from "date-fns"
+import { differenceInCalendarDays, isAfter, subDays } from "date-fns"
 import {
   Area,
   AreaChart,
@@ -40,13 +40,6 @@ import {
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   Table,
   TableBody,
   TableCell,
@@ -66,51 +59,23 @@ import {
   type Donor,
   type DonationRecord,
 } from "@/lib/donor-store"
+import {
+  buildNewDonorsChartData,
+  formatChartPeriodDescription,
+  formatChartTick,
+  getDefaultChartRange,
+  isWithinChartRange,
+  NewDonorsChartPicker,
+  normalizeChartRange,
+  type ChartViewMode,
+} from "@/components/new-donors-chart-picker"
 
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] as const
-const CHART_MONTHS = 12
 
 const DONOR_GENDER_COLORS = {
   male: "oklch(0.52 0.11 254)",
   female: "oklch(0.60 0.13 242)",
 } as const
-
-function dayLabel(d: Date) {
-  return d.toISOString().slice(0, 10)
-}
-
-function monthLabel(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-}
-
-function formatMonthTick(
-  value: string,
-  locale: string,
-  style: "short" | "long" = "short"
-) {
-  const [year, month] = value.split("-")
-  if (!year || !month) return value
-  const d = new Date(Number(year), Number(month) - 1, 1)
-  return d.toLocaleDateString(locale === "my" ? "my-MM" : "en-US", {
-    month: style,
-    year: style === "long" ? "numeric" : undefined,
-  })
-}
-
-function formatDayTick(
-  value: string,
-  locale: string,
-  style: "short" | "long" = "short"
-) {
-  const [year, month, day] = value.split("-")
-  if (!year || !month || !day) return value
-  const d = new Date(Number(year), Number(month) - 1, Number(day))
-  return d.toLocaleDateString(locale === "my" ? "my-MM" : "en-US", {
-    day: "numeric",
-    month: style === "long" ? "long" : "short",
-    year: style === "long" ? "numeric" : undefined,
-  })
-}
 
 export default function Page() {
     const { locale } = useLocale()
@@ -125,9 +90,15 @@ export default function Page() {
         donationsTotal: "Donation records",
         next7Days: "Eligible in 7 days",
         chartTitle: "New donors",
-        chartSub: "Registrations over the last 12 months",
-        chartFilterAll: "All months",
         chartSubDaily: "Daily registrations",
+        chartSubWeekly: "Weekly registrations",
+        chartSubMonthly: "Monthly registrations",
+        viewDay: "Day",
+        viewWeek: "Week",
+        viewMonth: "Month",
+        startDate: "Start date",
+        endDate: "End date",
+        clear: "Clear",
         male: "Male",
         female: "Female",
         bloodTypeTitle: "Blood type distribution",
@@ -136,6 +107,7 @@ export default function Page() {
         recentSub: "Latest registrations",
         cooldownNote: "56-day cooldown",
         last30: "last 30 days",
+        vsPreviousPeriod: "vs previous period",
         readyToUse: "ready to use",
         upcoming: "upcoming",
         empty: "No donors yet",
@@ -160,9 +132,15 @@ export default function Page() {
       donationsTotal: "လှူဒါန်းမှတ်တမ်း",
       next7Days: "၇ ရက်အတွင်း လှူနိုင်မယ့်သူ",
       chartTitle: "Donor အသစ်",
-      chartSub: "လွန်ခဲ့သော ၁၂ လအတွင်း မှတ်ပုံတင်မှု",
-      chartFilterAll: "လ အားလုံး",
       chartSubDaily: "နေ့စဉ် မှတ်ပုံတင်မှု",
+      chartSubWeekly: "အပတ်စဉ် မှတ်ပုံတင်မှု",
+      chartSubMonthly: "လစဉ် မှတ်ပုံတင်မှု",
+      viewDay: "နေ့",
+      viewWeek: "အပတ်",
+      viewMonth: "လ",
+      startDate: "စတင်ရက်",
+      endDate: "ပြီးဆုံးရက်",
+      clear: "ရှင်းမည်",
       male: "ကျား",
       female: "မ",
       bloodTypeTitle: "သွေးအုပ်စု ခွဲခြားမှု",
@@ -171,6 +149,7 @@ export default function Page() {
       recentSub: "နောက်ဆုံး မှတ်ပုံတင်မှုများ",
       cooldownNote: "၅၆ ရက် နားရန်",
       last30: "လွန်ခဲ့သော ၃၀ ရက်",
+      vsPreviousPeriod: "ယခင်ကာလနှင့် နှိုင်းယှဉ်",
       readyToUse: "အသုံးပြုနိုင်",
       upcoming: "လာမည့်",
       empty: "Donor မရှိသေးပါ",
@@ -192,7 +171,13 @@ export default function Page() {
   const [donors, setDonors] = useState<Donor[]>([])
   const [donations, setDonations] = useState<DonationRecord[]>([])
   const [nowMs, setNowMs] = useState(0)
-  const [chartMonthFilter, setChartMonthFilter] = useState("all")
+  const [chartViewMode, setChartViewMode] = useState<ChartViewMode>("month")
+  const [chartStartDate, setChartStartDate] = useState(
+    () => getDefaultChartRange().start
+  )
+  const [chartEndDate, setChartEndDate] = useState(
+    () => getDefaultChartRange().end
+  )
   const [chartSeries, setChartSeries] = useState({
     male: true,
     female: true,
@@ -207,6 +192,27 @@ export default function Page() {
     setNowMs(Date.now())
     setIsLoading(false)
   }, [])
+
+  const filterRange = useMemo(
+    () => normalizeChartRange(chartStartDate, chartEndDate),
+    [chartStartDate, chartEndDate]
+  )
+
+  const filteredDonors = useMemo(
+    () =>
+      donors.filter((donor) =>
+        isWithinChartRange(donor.createdAt, filterRange.start, filterRange.end)
+      ),
+    [donors, filterRange]
+  )
+
+  const filteredDonations = useMemo(
+    () =>
+      donations.filter((record) =>
+        isWithinChartRange(record.donatedAt, filterRange.start, filterRange.end)
+      ),
+    [donations, filterRange]
+  )
 
   const lastDonationByDonor = useMemo(() => {
     const map = new Map<string, DonationRecord>()
@@ -232,13 +238,13 @@ export default function Page() {
   )
 
   const stats = useMemo(() => {
-    const total = donors.length
+    const total = filteredDonors.length
     const nowDate = new Date(nowMs || Date.now())
     const in7 = new Date(nowDate.getTime() + 7 * 86400000)
     let eligible = 0
     let soon = 0
 
-    for (const donor of donors) {
+    for (const donor of filteredDonors) {
       if (isDonorEligible(donor.id)) eligible += 1
 
       const last = lastDonationByDonor.get(donor.id)
@@ -248,82 +254,72 @@ export default function Page() {
       }
     }
 
-    const now = nowMs
-    const last30 = donors.filter(
-      (d) => now - new Date(d.createdAt).getTime() <= 30 * 86400000
+    const periodDays =
+      differenceInCalendarDays(filterRange.end, filterRange.start) + 1
+    const prevEnd = subDays(filterRange.start, 1)
+    const prevStart = subDays(prevEnd, periodDays - 1)
+    const currentPeriod = filteredDonors.length
+    const previousPeriod = donors.filter((donor) =>
+      isWithinChartRange(donor.createdAt, prevStart, prevEnd)
     ).length
-    const prev30 = donors.filter((d) => {
-      const age = now - new Date(d.createdAt).getTime()
-      return age > 30 * 86400000 && age <= 60 * 86400000
-    }).length
     const trend =
-      prev30 === 0
-        ? last30 > 0
+      previousPeriod === 0
+        ? currentPeriod > 0
           ? 100
           : 0
-        : Math.round(((last30 - prev30) / prev30) * 100)
+        : Math.round(((currentPeriod - previousPeriod) / previousPeriod) * 100)
 
-    const readyBags = donations.filter(
-      (r) => r.bloodBagStatus === "ready_to_use"
+    const readyBags = filteredDonations.filter(
+      (record) => record.bloodBagStatus === "ready_to_use"
     ).length
 
     return { total, eligible, soon, trend, readyBags }
-  }, [donors, donations, nowMs, lastDonationByDonor, isDonorEligible])
+  }, [
+    filteredDonors,
+    filteredDonations,
+    donors,
+    filterRange,
+    nowMs,
+    lastDonationByDonor,
+    isDonorEligible,
+  ])
 
-  const donationsCount = donations.length
+  const donationsCount = filteredDonations.length
 
   const bloodTypeData = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const bt of BLOOD_TYPES) counts.set(bt, 0)
-    for (const d of donors) {
-      counts.set(d.bloodType, (counts.get(d.bloodType) ?? 0) + 1)
+    const counts = new Map<string, { male: number; female: number }>()
+    for (const bt of BLOOD_TYPES) counts.set(bt, { male: 0, female: 0 })
+    for (const d of filteredDonors) {
+      const row = counts.get(d.bloodType)
+      if (!row) continue
+      if (d.gender === "male") row.male += 1
+      else if (d.gender === "female") row.female += 1
     }
     return BLOOD_TYPES.map((bt) => ({
       bloodType: bt,
-      count: counts.get(bt) ?? 0,
+      male: counts.get(bt)?.male ?? 0,
+      female: counts.get(bt)?.female ?? 0,
     }))
-  }, [donors])
+  }, [filteredDonors])
 
   const recentDonors = useMemo(() => {
-    return donors
+    return filteredDonors
       .slice()
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 8)
-  }, [donors])
+  }, [filteredDonors])
 
-  const chartData = useMemo(() => {
-    const end = new Date()
-    end.setHours(0, 0, 0, 0)
-    const start = new Date(end.getFullYear(), end.getMonth() - (CHART_MONTHS - 1), 1)
+  const filteredChartData = useMemo(
+    () =>
+      buildNewDonorsChartData(
+        donors,
+        chartViewMode,
+        chartStartDate,
+        chartEndDate
+      ),
+    [donors, chartViewMode, chartStartDate, chartEndDate]
+  )
 
-    const counts = new Map<string, { male: number; female: number }>()
-    const cursor = new Date(start)
-    const endMonth = new Date(end.getFullYear(), end.getMonth(), 1)
-
-    while (cursor <= endMonth) {
-      counts.set(monthLabel(cursor), { male: 0, female: 0 })
-      cursor.setMonth(cursor.getMonth() + 1)
-    }
-
-    for (const donor of donors) {
-      const created = new Date(donor.createdAt)
-      const key = monthLabel(created)
-      const row = counts.get(key)
-      if (!row) continue
-      if (donor.gender === "male") row.male += 1
-      else if (donor.gender === "female") row.female += 1
-    }
-
-    return Array.from(counts.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, { male, female }]) => ({
-        date,
-        male,
-        female,
-      }))
-  }, [donors])
-
-  const isDailyChart = chartMonthFilter !== "all"
   const chartStackId =
     chartSeries.male && chartSeries.female ? "gender" : undefined
 
@@ -337,41 +333,6 @@ export default function Page() {
       return next
     })
   }
-
-  const filteredChartData = useMemo(() => {
-    if (chartMonthFilter === "all") return chartData
-
-    const [year, month] = chartMonthFilter.split("-").map(Number)
-    if (!year || !month) return chartData
-
-    const start = new Date(year, month - 1, 1)
-    const end = new Date(year, month, 0)
-
-    const counts = new Map<string, { male: number; female: number }>()
-    const cursor = new Date(start)
-    while (cursor <= end) {
-      counts.set(dayLabel(cursor), { male: 0, female: 0 })
-      cursor.setDate(cursor.getDate() + 1)
-    }
-
-    for (const donor of donors) {
-      const created = new Date(donor.createdAt)
-      if (monthLabel(created) !== chartMonthFilter) continue
-      const key = dayLabel(created)
-      const row = counts.get(key)
-      if (!row) continue
-      if (donor.gender === "male") row.male += 1
-      else if (donor.gender === "female") row.female += 1
-    }
-
-    return Array.from(counts.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, { male, female }]) => ({
-        date,
-        male,
-        female,
-      }))
-  }, [chartData, chartMonthFilter, donors])
 
   const chartConfig = useMemo<ChartConfig>(
     () => ({
@@ -389,12 +350,16 @@ export default function Page() {
 
   const bloodTypeConfig = useMemo<ChartConfig>(
     () => ({
-      count: {
-        label: t.donors,
-        color: "oklch(0.58 0.14 254)",
+      male: {
+        label: t.male,
+        color: DONOR_GENDER_COLORS.male,
+      },
+      female: {
+        label: t.female,
+        color: DONOR_GENDER_COLORS.female,
       },
     }),
-    [t.donors]
+    [t.male, t.female]
   )
 
   const donationRadialData = useMemo(
@@ -597,9 +562,31 @@ export default function Page() {
         </div>
       ) : (
         <div className="space-y-6">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">{t.title}</h1>
-            <p className="text-sm text-muted-foreground">{t.subtitle}</p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">{t.title}</h1>
+              <p className="text-sm text-muted-foreground">{t.subtitle}</p>
+            </div>
+            <NewDonorsChartPicker
+              locale={locale}
+              viewMode={chartViewMode}
+              startDate={chartStartDate}
+              endDate={chartEndDate}
+              onViewModeChange={setChartViewMode}
+              onRangeChange={(start, end) => {
+                const normalized = normalizeChartRange(start, end)
+                setChartStartDate(normalized.start)
+                setChartEndDate(normalized.end)
+              }}
+              labels={{
+                viewDay: t.viewDay,
+                viewWeek: t.viewWeek,
+                viewMonth: t.viewMonth,
+                startDate: t.startDate,
+                endDate: t.endDate,
+                clear: t.clear,
+              }}
+            />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -644,7 +631,7 @@ export default function Page() {
                               {stats.trend}%
                             </span>
                             <span className="text-muted-foreground">
-                              {t.last30}
+                              {t.vsPreviousPeriod}
                             </span>
                           </div>
                         ) : (
@@ -947,33 +934,21 @@ export default function Page() {
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
             <Card className="min-w-0 xl:col-span-8">
-              <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <CardTitle className="text-base">{t.chartTitle}</CardTitle>
-                  <CardDescription>
-                    {chartMonthFilter === "all"
-                      ? t.chartSub
-                      : `${formatMonthTick(chartMonthFilter, locale, "long")} · ${t.chartSubDaily}`}
-                  </CardDescription>
-                </div>
-                <Select
-                  value={chartMonthFilter}
-                  onValueChange={(value) => {
-                    if (value) setChartMonthFilter(value)
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[180px]">
-                    <SelectValue placeholder={t.chartFilterAll} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">{t.chartFilterAll}</SelectItem>
-                    {chartData.map((row) => (
-                      <SelectItem key={row.date} value={row.date}>
-                        {formatMonthTick(row.date, locale, "long")}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <CardHeader className="space-y-1">
+                <CardTitle className="text-base">{t.chartTitle}</CardTitle>
+                <CardDescription>
+                  {formatChartPeriodDescription(
+                    chartViewMode,
+                    chartStartDate,
+                    chartEndDate,
+                    locale,
+                    {
+                      chartSubDaily: t.chartSubDaily,
+                      chartSubWeekly: t.chartSubWeekly,
+                      chartSubMonthly: t.chartSubMonthly,
+                    }
+                  )}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <ChartContainer
@@ -992,11 +967,14 @@ export default function Page() {
                       tickLine={false}
                       axisLine={false}
                       tickMargin={8}
-                      minTickGap={isDailyChart ? 8 : 24}
+                      minTickGap={chartViewMode === "month" ? 24 : 8}
                       tickFormatter={(value) =>
-                        isDailyChart
-                          ? formatDayTick(String(value), locale, "short")
-                          : formatMonthTick(String(value), locale, "short")
+                        formatChartTick(
+                          String(value),
+                          chartViewMode,
+                          locale,
+                          "short"
+                        )
                       }
                     />
                     <YAxis
@@ -1010,9 +988,12 @@ export default function Page() {
                       content={
                         <ChartTooltipContent
                           labelFormatter={(label) =>
-                            isDailyChart
-                              ? formatDayTick(String(label), locale, "long")
-                              : formatMonthTick(String(label), locale, "long")
+                            formatChartTick(
+                              String(label),
+                              chartViewMode,
+                              locale,
+                              "long"
+                            )
                           }
                         />
                       }
@@ -1129,7 +1110,7 @@ export default function Page() {
                 <CardTitle className="text-base">{t.bloodTypeTitle}</CardTitle>
                 <CardDescription>{t.bloodTypeSub}</CardDescription>
               </CardHeader>
-              <CardContent className="pb-0">
+              <CardContent className="pb-3">
                 <ChartContainer
                   id="blood-type"
                   config={bloodTypeConfig}
@@ -1142,15 +1123,68 @@ export default function Page() {
                     />
                     <PolarAngleAxis dataKey="bloodType" />
                     <PolarGrid radialLines={false} />
-                    <Radar
-                      dataKey="count"
-                      fill="var(--color-count)"
-                      fillOpacity={0}
-                      stroke="var(--color-count)"
-                      strokeWidth={2}
-                    />
+                    {chartSeries.female ? (
+                      <Radar
+                        dataKey="female"
+                        fill="var(--color-female)"
+                        fillOpacity={0.15}
+                        stroke="var(--color-female)"
+                        strokeWidth={2}
+                      />
+                    ) : null}
+                    {chartSeries.male ? (
+                      <Radar
+                        dataKey="male"
+                        fill="var(--color-male)"
+                        fillOpacity={0.15}
+                        stroke="var(--color-male)"
+                        strokeWidth={2}
+                      />
+                    ) : null}
                   </RadarChart>
                 </ChartContainer>
+                <div className="flex items-center justify-center gap-4 pt-3">
+                  {(
+                    [
+                      {
+                        key: "female" as const,
+                        label: t.female,
+                        color: DONOR_GENDER_COLORS.female,
+                      },
+                      {
+                        key: "male" as const,
+                        label: t.male,
+                        color: DONOR_GENDER_COLORS.male,
+                      },
+                    ] as const
+                  ).map((item) => {
+                    const visible = chartSeries[item.key]
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() =>
+                          setChartSeriesVisible(item.key, !visible)
+                        }
+                        className="flex cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-sm"
+                      >
+                        <span
+                          className={`size-2.5 rounded-[3px] transition-opacity ${visible ? "opacity-100" : "opacity-30"}`}
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span
+                          className={
+                            visible
+                              ? "text-foreground"
+                              : "text-muted-foreground line-through"
+                          }
+                        >
+                          {item.label}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
               </CardContent>
             </Card>
           </div>
