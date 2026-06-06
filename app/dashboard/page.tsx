@@ -958,7 +958,9 @@ export default function Page() {
                 </div>
                 <Select
                   value={chartMonthFilter}
-                  onValueChange={setChartMonthFilter}
+                  onValueChange={(value) => {
+                    if (value) setChartMonthFilter(value)
+                  }}
                 >
                   <SelectTrigger className="w-full sm:w-[180px]">
                     <SelectValue placeholder={t.chartFilterAll} />
