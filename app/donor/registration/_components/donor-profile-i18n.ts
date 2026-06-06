@@ -98,6 +98,16 @@ export function getDonorNotebookLabels(locale: Locale) {
       donationNotes: "Donation notes",
       none: "—",
       ml: "ml",
+      eidCard: "EID Card",
+      eidStatusIssued: "Issued",
+      eidStatusPending: "Not issued",
+      eidNotIssuedHint:
+        "This donor does not have an EID card yet. Upload a photo and issue the card from the EID Card page.",
+      eidNoPhotoHint:
+        "Upload a donor photo on the EID Card page to preview the card before issuing.",
+      eidIssuedAt: "Issued at",
+      eidPreviewHint: "Preview — EID not issued yet",
+      openEidPage: "Open EID Card page",
     } as const
   }
 
@@ -129,6 +139,59 @@ export function getDonorNotebookLabels(locale: Locale) {
     donationNotes: "လှူဒါန်းမှု မှတ်ချက်",
     none: "—",
     ml: "ml",
+    eidCard: "EID Card",
+    eidStatusIssued: "ထုတ်ပြီးပါပြီ",
+    eidStatusPending: "မထုတ်ရသေးပါ",
+    eidNotIssuedHint:
+      "ဒီ Donor မှာ EID card မထုတ်ရသေးပါ။ EID Card page မှာ photo upload လုပ်ပြီး card ထုတ်ပေးပါ။",
+    eidNoPhotoHint:
+      "EID card preview ကြည့်ရန် EID Card page မှာ donor photo upload လုပ်ပါ။",
+    eidIssuedAt: "ထုတ်ပေးသည့်ရက်",
+    eidPreviewHint: "Preview — EID မထုတ်ရသေးပါ",
+    openEidPage: "EID Card page သို့",
+  } as const
+}
+
+export function getDonorEidCardLabels(locale: Locale) {
+  if (locale === "en") {
+    return {
+      orgNameMm: "မြန်မာနိုင်ငံ သွေးလှူရှင်များ စီမံခန့်ခွဲမှု",
+      orgNameEn: "BLOOD DONATION MANAGEMENT SYSTEM (BDMS)",
+      cardTitle: "Blood Donor Member Card (EID)",
+      nameLabel: "Name",
+      bloodGroupLabel: "Blood Group",
+      memberNoLabel: "Member No.",
+      nrcLabel: "N.R.C No.",
+      joinedDateLabel: "First donation date",
+      donationCountLabel: "Donations",
+      lastDonationLabel: "Last donation",
+      scanHint: "(Scan for details and donation history)",
+      signatureLabel: "Member's Signature",
+      phone: "Phone: 09-123456789",
+      email: "Email: info@bdms.local",
+      website: "Website: www.bdms.local",
+      none: "—",
+    } as const
+  }
+
+  return {
+    orgNameMm: "မြန်မာနိုင်ငံ သွေးလှူရှင်များအသင်း",
+    orgNameEn: "MYANMAR BLOOD DONORS ASSOCIATION",
+    cardTitle: "သွေးလှူရှင် အသင်းဝင်ကတ် (EID)",
+    nameLabel: "အမည် (Name)",
+    bloodGroupLabel: "သွေးအုပ်စု (Blood Group)",
+    memberNoLabel: "အသင်းဝင်နံပါတ် (Member No.)",
+    nrcLabel: "မှတ်ပုံတင်နံပါတ် (N.R.C No.)",
+    joinedDateLabel: "သွေးစတင်လှူဒါန်းသည့်ရက်",
+    donationCountLabel: "လှူဒါန်းခဲ့သည့်အရေအတွက်",
+    lastDonationLabel: "နောက်ဆုံးရက်စွဲ",
+    scanHint:
+      "အသေးစိတ်အချက်အလက်များအတွက် (Scan for detailed details and donation history)",
+    signatureLabel: "အသင်းဝင် လက်မှတ်",
+    phone: "ဖုန်း: ၀၉-၁၂၃၄၅၆၇၈",
+    email: "အီးမေးလ်: info@mbda.org.mm",
+    website: "ဝဘ်ဆိုဒ်: www.mbda.org.mm",
+    none: "—",
   } as const
 }
 

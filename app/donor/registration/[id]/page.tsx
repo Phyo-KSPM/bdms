@@ -473,7 +473,9 @@ export default function Page() {
                     </Button>
                   ) : null}
                   {donor?.eid ? (
-                    <Link href="/donor/certificate">
+                    <Link
+                      href={`/donor/certificate?eid=${encodeURIComponent(donor.eid)}&donorId=${encodeURIComponent(donor.donorId)}`}
+                    >
                       <Button size="sm" variant="outline">
                         {t.viewEidCard}
                       </Button>

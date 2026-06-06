@@ -1,10 +1,14 @@
 "use client"
 
+import Link from "next/link"
+import { useMemo } from "react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { useLocale } from "@/components/i18n/locale-provider"
 import {
   formatDonorDateTime,
   formatMedicalKeyList,
+  getDonorEidCardLabels,
 } from "@/app/donor/registration/_components/donor-profile-i18n"
 import {
   Table,
@@ -15,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DonorEidCard } from "@/components/donor-eid-card"
 import { DonationDetailsStep } from "@/app/donor/registration/_components/steps/DonationDetailsStep"
 import { MedicalHistoryStep } from "@/app/donor/registration/_components/steps/MedicalHistoryStep"
 import { ScreeningStep } from "@/app/donor/registration/_components/steps/ScreeningStep"
@@ -23,6 +28,7 @@ import type {
   Donor,
   ScreeningVisit,
 } from "@/lib/donor-store"
+import { getNextEidPreview } from "@/lib/donor-store"
 
 type DonorRelatedNotebookLabels = {
   notebookTitle: string
@@ -52,6 +58,14 @@ type DonorRelatedNotebookLabels = {
   donationNotes: string
   none: string
   ml: string
+  eidCard: string
+  eidStatusIssued: string
+  eidStatusPending: string
+  eidNotIssuedHint: string
+  eidNoPhotoHint: string
+  eidIssuedAt: string
+  eidPreviewHint: string
+  openEidPage: string
 }
 
 type DonorRelatedNotebookEditLabels = {
@@ -124,6 +138,27 @@ export function DonorRelatedNotebook({
 }: DonorRelatedNotebookProps) {
   const { locale } = useLocale()
   const isEditing = Boolean(control && editLabels)
+  const eidCardLabels = useMemo(() => getDonorEidCardLabels(locale), [locale])
+
+  const eidStats = useMemo(() => {
+    const sorted = donations
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(a.donatedAt).getTime() - new Date(b.donatedAt).getTime()
+      )
+    return {
+      donationCount: donations.length,
+      firstDonationDate: sorted[0]?.donatedAt ?? null,
+      lastDonationDate: sorted.at(-1)?.donatedAt ?? null,
+    }
+  }, [donations])
+
+  const hasEid = Boolean(donor.eid?.trim())
+  const hasPhoto = Boolean(donor.photoUrl?.trim())
+  const previewEid = useMemo(() => getNextEidPreview(), [donor.id])
+  const eidTabStatus = hasEid ? labels.eidStatusIssued : labels.eidStatusPending
+
   return (
     <div className="border-t pt-5">
       <h3 className="mb-4 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -145,6 +180,19 @@ export function DonorRelatedNotebook({
             </TabsTrigger>
             <TabsTrigger value="donation-info" className="flex-none px-3">
               {labels.donationInfo}
+            </TabsTrigger>
+            <TabsTrigger value="eid-card" className="flex-none gap-1.5 px-3">
+              {labels.eidCard}
+              <Badge
+                variant={hasEid ? "default" : "secondary"}
+                className={
+                  hasEid
+                    ? "bg-emerald-600 text-white hover:bg-emerald-600"
+                    : undefined
+                }
+              >
+                {eidTabStatus}
+              </Badge>
             </TabsTrigger>
           </TabsList>
 
@@ -342,6 +390,83 @@ export function DonorRelatedNotebook({
                   label={labels.donationNotes}
                   value={donor.donationDetails.notes || labels.none}
                 />
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="eid-card" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Badge
+                variant={hasEid ? "default" : "outline"}
+                className={
+                  hasEid
+                    ? "bg-emerald-600 text-white hover:bg-emerald-600"
+                    : "text-amber-700 dark:text-amber-300"
+                }
+              >
+                {hasEid ? labels.eidStatusIssued : labels.eidStatusPending}
+              </Badge>
+              {hasEid && donor.eidIssuedAt ? (
+                <p className="text-sm text-muted-foreground">
+                  {labels.eidIssuedAt}:{" "}
+                  {formatDonorDateTime(donor.eidIssuedAt, locale)}
+                </p>
+              ) : null}
+            </div>
+
+            {hasEid ? (
+              <DonorEidCard
+                donor={donor}
+                labels={eidCardLabels}
+                stats={eidStats}
+                useMyanmarDigits={locale === "mm"}
+                className="mx-auto max-w-[540px]"
+              />
+            ) : hasPhoto ? (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  {labels.eidPreviewHint}
+                </p>
+                <DonorEidCard
+                  donor={{
+                    ...donor,
+                    eid: previewEid,
+                  }}
+                  labels={eidCardLabels}
+                  stats={eidStats}
+                  useMyanmarDigits={locale === "mm"}
+                  isPreview
+                  className="mx-auto max-w-[540px]"
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {labels.eidNoPhotoHint}
+              </p>
+            )}
+
+            {!hasEid ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  {labels.eidNotIssuedHint}
+                </p>
+                <Link
+                  href={`/donor/certificate?donorId=${encodeURIComponent(donor.donorId)}${donor.eid ? `&eid=${encodeURIComponent(donor.eid)}` : ""}`}
+                >
+                  <Button variant="outline" size="sm">
+                    {labels.openEidPage}
+                  </Button>
+                </Link>
+              </div>
+            ) : (
+              <div className="flex justify-center">
+                <Link
+                  href={`/donor/certificate?donorId=${encodeURIComponent(donor.donorId)}${donor.eid ? `&eid=${encodeURIComponent(donor.eid)}` : ""}`}
+                >
+                  <Button variant="outline" size="sm">
+                    {labels.openEidPage}
+                  </Button>
+                </Link>
               </div>
             )}
           </TabsContent>

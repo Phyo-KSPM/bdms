@@ -14,7 +14,7 @@ const HIDDEN_DEMO_DONOR_IDS_KEY = "bdms-hidden-demo-donors-v3"
 const DONOR_AUDIT_LOG_KEY = "bdms-donor-audit-log"
 const DONOR_DATA_VERSION_KEY = "bdms-donor-data-version"
 /** Bump when demo donor shape/count/seed changes to force a one-time local reset. */
-const DONOR_DATA_VERSION = "v6-screening-same-day-20260606"
+const DONOR_DATA_VERSION = "v7-consistent-donor-demo-20260607"
 const DEMO_MONTHLY_DONOR_COUNTS = [
   22, 35, 48, 28, 65, 42, 70, 38, 55, 24, 45, 31,
 ] as const
@@ -52,6 +52,28 @@ function demoWorkflowBounds(total: number) {
     infectiousStart: passedEnd,
     infectiousEnd,
   }
+}
+
+function demoDonorInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0] ?? "")
+    .join("")
+    .slice(0, 2)
+    .toUpperCase()
+}
+
+function demoDonorPhotoDataUrl(name: string, hue: number) {
+  const initials = demoDonorInitials(name)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="300" viewBox="0 0 240 300"><rect width="240" height="300" fill="hsl(${hue}, 42%, 84%)"/><text x="120" y="168" text-anchor="middle" font-family="Arial,sans-serif" font-size="68" font-weight="600" fill="hsl(${hue}, 32%, 32%)">${initials}</text></svg>`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+}
+
+function demoDonorHasEid(idx: number, bounds: ReturnType<typeof demoWorkflowBounds>) {
+  const isPassedReady = idx >= bounds.pendingEnd && idx < bounds.passedEnd
+  const isHistorical = idx >= bounds.historicalStart
+  return isPassedReady || isHistorical
 }
 
 let cachedAllDemoDonors: Donor[] | null = null
@@ -727,6 +749,7 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
   }
 
   let i = 0
+  let eidSeq = 0
   for (let monthsAgo = monthlyCounts.length - 1; monthsAgo >= 0; monthsAgo--) {
     const monthCount = monthlyCounts[monthlyCounts.length - 1 - monthsAgo] ?? 0
     for (let j = 0; j < monthCount; j++) {
@@ -772,10 +795,36 @@ function buildDemoDonors(count: number = DEFAULT_DEMO_DONOR_COUNT): Donor[] {
         }
       }
 
+      const identity =
+        demoDonorHasEid(idx, bounds)
+          ? (() => {
+              eidSeq += 1
+              const donationDaysAgo =
+                idx >= bounds.historicalStart
+                  ? demoLastDonationDaysAgo(idx)
+                  : undefined
+              return {
+                eid: formatEid(eidSeq),
+                eidIssuedAt:
+                  donationDaysAgo != null
+                    ? demoWorkflowDayTimestamp(donationDaysAgo + 14, 10)
+                    : createdAt,
+                photoUrl: demoDonorPhotoDataUrl(name, (idx * 41) % 360),
+              }
+            })()
+          : {
+              eid: null as string | null,
+              eidIssuedAt: null as string | null,
+              photoUrl: null as string | null,
+            }
+
       demo.push(
         normalizeDonor({
           id: `demo-donor-${pad(i + 1, 4)}`,
           donorId: formatDonorId(i + 1),
+          eid: identity.eid,
+          eidIssuedAt: identity.eidIssuedAt,
+          photoUrl: identity.photoUrl,
           name,
           age,
           bloodType,
@@ -832,8 +881,7 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
     }
 
     if (idx < bounds.passedEnd) {
-      const daysAgo = Math.floor(rng() * 3)
-      const visitDay = demoWorkflowDayTimestamp(daysAgo, 9)
+      const visitDay = demoWorkflowDayTimestamp(0, 9)
       visits.push(
         normalizeScreeningVisit({
           id: `demo-screening-${pad(idx + 1, 4)}`,
@@ -893,6 +941,24 @@ function buildDemoScreeningVisits(donors: Donor[]): ScreeningVisit[] {
         linkedDonationId: donationRecordId,
       })
     )
+
+    if (idx % 5 === 0) {
+      const olderDaysAgo = daysAgo + 120
+      const olderScreeningAt = demoWorkflowDayTimestamp(olderDaysAgo, 9)
+      visits.push(
+        normalizeScreeningVisit({
+          id: `demo-screening-hist2-${pad(idx + 1, 4)}`,
+          donorId: donor.id,
+          createdAt: olderScreeningAt,
+          screenedAt: olderScreeningAt,
+          vitals: baseVitals,
+          tti: demoNegativeTti(),
+          status: "passed",
+          screenedBy: "Demo Lab Tech",
+          linkedDonationId: `demo-donation2-${pad(idx + 1, 4)}`,
+        })
+      )
+    }
   }
 
   return visits
@@ -968,6 +1034,45 @@ function buildDemoDonations(
         note: "Demo donation (screening passed before collection)",
       })
     )
+
+    if (i % 5 === 0) {
+      const olderDaysAgo = demoLastDonationDaysAgo(i) + 120
+      const olderScreening = visitsById.get(
+        `demo-screening-hist2-${pad(i + 1, 4)}`
+      )
+      if (olderScreening) {
+        const olderOutcome = demoBloodBagOutcome(rng)
+        records.push(
+          normalizeDonationRecord({
+            id: `demo-donation2-${pad(i + 1, 4)}`,
+            donationId: `BAG-DEMO2-${pad(i + 1, 4)}`,
+            donorId: donor.id,
+            donatedAt: demoWorkflowDayTimestamp(olderDaysAgo, 11),
+            donationType:
+              donor.donationDetails.donationType ??
+              pick(rng, DonationTypeSchema.options),
+            volumeMl: 450,
+            location: pick(rng, [
+              "Yangon General Hospital",
+              "Mobile Camp A",
+              "BDMS Center",
+            ]),
+            vitals: {
+              bpSystolic: olderScreening.vitals.bpSystolic,
+              bpDiastolic: olderScreening.vitals.bpDiastolic,
+              hb: olderScreening.vitals.hb,
+              weightKg: olderScreening.vitals.weightKg,
+            },
+            bloodBagStatus: olderOutcome.bloodBagStatus,
+            tti: olderOutcome.tti,
+            receivedBy: olderScreening.screenedBy,
+            collectedBy: "Demo Phlebotomist",
+            adverseReactions: "",
+            note: "Demo repeat donation (56-day interval satisfied)",
+          })
+        )
+      }
+    }
   }
 
   return records

@@ -2,7 +2,8 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { IdCardIcon, PrinterIcon, RotateCcwIcon } from "lucide-react"
 import { toast } from "sonner"
 
@@ -13,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import { usePermissions } from "@/hooks/use-permissions"
 import {
   filterDonorMatches,
@@ -31,8 +33,33 @@ import { readDonorPhotoFile } from "@/lib/donor-photo"
 import { PermissionDeniedError } from "@/lib/permissions"
 
 export default function Page() {
+  return (
+    <Suspense
+      fallback={
+        <AuthedShell title="Donor EID Card">
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-6 w-40" />
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <Skeleton className="h-10 w-full rounded-lg" />
+                <Skeleton className="h-[320px] w-full rounded-md" />
+              </div>
+            </CardContent>
+          </Card>
+        </AuthedShell>
+      }
+    >
+      <CertificatePageContent />
+    </Suspense>
+  )
+}
+
+function CertificatePageContent() {
   const { locale } = useLocale()
   const { can } = usePermissions()
+  const searchParams = useSearchParams()
   const canIssueEid = can("donors.write")
   const donorInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -180,8 +207,19 @@ export default function Page() {
 
   useEffect(() => {
     refreshDonors()
-    donorInputRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    const initial =
+      searchParams.get("eid") ??
+      searchParams.get("donorId") ??
+      searchParams.get("donor")
+    if (initial) {
+      setDonorQuery(initial)
+      return
+    }
+    donorInputRef.current?.focus()
+  }, [searchParams])
 
   useEffect(() => {
     const exact = resolveDonorFromQuery(donors, donorQuery)
@@ -253,7 +291,7 @@ export default function Page() {
 
   function selectDonor(d: Donor) {
     setSelectedDonorId(d.id)
-    setDonorQuery(d.donorId)
+    setDonorQuery(d.eid ?? d.donorId)
   }
 
   function handleDonorKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -303,7 +341,7 @@ export default function Page() {
       const updated = issueDonorEid(donor.id, { photoUrl: pendingPhotoUrl })
       refreshDonors()
       setSelectedDonorId(updated.id)
-      setDonorQuery(updated.donorId)
+      setDonorQuery(updated.eid ?? updated.donorId)
       setPendingPhotoUrl(updated.photoUrl)
       toast.success(t.eidIssued)
     } catch (err) {
